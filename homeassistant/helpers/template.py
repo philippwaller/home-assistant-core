@@ -1992,7 +1992,7 @@ def multiply(value, amount, default=_SENTINEL):
             raise_no_default("multiply", value)
         return default
 
-
+# deprecated since 2024.XX
 def add(value, amount, default=_SENTINEL):
     """Filter to convert value to float and add it."""
     try:
