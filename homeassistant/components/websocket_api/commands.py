@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from functools import lru_cache, partial
 import json
 import logging
+import types
 from typing import Any, cast
 
+from jinja2 import Environment
 import voluptuous as vol
 
 from homeassistant.auth.models import User
@@ -48,6 +51,10 @@ from homeassistant.helpers.json import (
     json_bytes,
 )
 from homeassistant.helpers.service import async_get_all_descriptions
+from homeassistant.helpers.template_extensions import (
+    TemplateExtensionFeature,
+    TemplateExtensionRegistry,
+)
 from homeassistant.loader import (
     Integration,
     IntegrationNotFound,
@@ -85,6 +92,7 @@ def async_register_commands(
     async_reg(hass, handle_manifest_list)
     async_reg(hass, handle_ping)
     async_reg(hass, handle_render_template)
+    async_reg(hass, handle_get_template_extensions)
     async_reg(hass, handle_subscribe_bootstrap_integrations)
     async_reg(hass, handle_subscribe_events)
     async_reg(hass, handle_subscribe_trigger)
@@ -563,6 +571,74 @@ def handle_ping(
 def _cached_template(template_str: str, hass: HomeAssistant) -> template.Template:
     """Return a cached template."""
     return template.Template(template_str, hass)
+
+
+@decorators.websocket_command(
+    {
+        vol.Required("type"): "template_extensions",
+    }
+)
+@decorators.async_response
+async def handle_get_template_extensions(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Handle template extensions command."""
+
+    # Block1 Load native features
+    async def load_native_features() -> dict[str, TemplateExtensionFeature]:
+        # pylint: disable=protected-access
+        template_env = template.Template("", hass)._env
+        features = {}
+
+        feature_types = {
+            "tests": TemplateExtensionFeature.FeatureType.TEST,
+            "globals": TemplateExtensionFeature.FeatureType.GLOBAL,
+            "filters": TemplateExtensionFeature.FeatureType.FILTER,
+        }
+
+        for attr, feature_type in feature_types.items():
+            for name, func in getattr(template_env, attr).items():
+                if isinstance(func, types.FunctionType) and not hasattr(
+                    func, "_feature_data"
+                ):
+                    feature = TemplateExtensionFeature(
+                        feature_type=feature_type,
+                        name=name,
+                        func=func,
+                        limited=True,
+                    )
+                    features[feature.feature_id] = await feature.localize(
+                        hass, "homeassistant", "native", hass.config.language
+                    )
+
+        return features
+
+    async def load_custom_features() -> dict[str, TemplateExtensionFeature]:
+        env = Environment()
+        extensions = TemplateExtensionRegistry.get_instance().async_extensions()
+        custom_features = {}
+
+        for ext_class in extensions.values():
+            for feature in ext_class(env, False, False, None).features:
+                if ext_class.component is not None:
+                    feature = await feature.localize(
+                        hass=hass,
+                        component=ext_class.component(),
+                        extension_id=ext_class.extension_id(),
+                        language=hass.config.language,
+                    )
+                custom_features[feature.feature_id] = feature
+
+        return custom_features
+
+    native_feats_task = hass.async_create_task(load_native_features())
+    custom_feats_task = hass.async_create_task(load_custom_features())
+    native_features, custom_features = await asyncio.gather(
+        native_feats_task, custom_feats_task
+    )
+
+    payload = json_bytes({**native_features, **custom_features})
+    connection.send_message(construct_result_message(msg["id"], payload))
 
 
 @decorators.websocket_command(

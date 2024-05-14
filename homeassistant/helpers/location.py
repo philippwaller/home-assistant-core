@@ -24,7 +24,9 @@ def has_location(state: State) -> bool:
     )
 
 
-def closest(latitude: float, longitude: float, states: Iterable[State]) -> State | None:
+def closest(
+    latitude: float | None, longitude: float | None, states: Iterable[State]
+) -> State | None:
     """Return closest state to point.
 
     Async friendly.

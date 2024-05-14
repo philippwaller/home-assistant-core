@@ -83,6 +83,7 @@ from .helpers import (
     recorder,
     restore_state,
     template,
+    template_extensions,
     translation,
 )
 from .helpers.dispatcher import async_dispatcher_send_internal
@@ -393,6 +394,7 @@ async def async_load_base_functionality(hass: core.HomeAssistant) -> None:
     translation.async_setup(hass)
     entity.async_setup(hass)
     template.async_setup(hass)
+    template_extensions.async_setup(hass)
     await asyncio.gather(
         create_eager_task(get_internal_store_manager(hass).async_initialize()),
         create_eager_task(area_registry.async_load(hass)),

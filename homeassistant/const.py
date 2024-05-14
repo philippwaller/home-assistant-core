@@ -326,6 +326,8 @@ EVENT_RECORDER_HOURLY_STATISTICS_GENERATED: Final = (
     "recorder_hourly_statistics_generated"
 )
 EVENT_SHOPPING_LIST_UPDATED: Final = "shopping_list_updated"
+EVENT_TEMPLATE_EXTENSION_REGISTERED: Final = "template_extension_registered"
+EVENT_TEMPLATE_EXTENSION_REMOVED: Final = "template_extension_removed"
 
 # #### DEVICE CLASSES ####
 # DEVICE_CLASS_* below are deprecated as of 2021.12
@@ -506,6 +508,9 @@ ATTR_SECONDS: Final = "seconds"
 ATTR_DOMAIN: Final = "domain"
 ATTR_SERVICE: Final = "service"
 ATTR_SERVICE_DATA: Final = "service_data"
+
+# Contains extension_id for a TEMPLATE_EXTENSION_REGISTER event
+ATTR_EXTENSION_ID: Final = "extension_id"
 
 # IDs
 ATTR_ID: Final = "id"
@@ -1640,3 +1645,6 @@ __dir__ = partial(
     dir_with_deprecated_constants, module_globals_keys=[*globals().keys()]
 )
 __all__ = all_with_deprecated_constants(globals())
+
+# Template Extensions
+FEAT_DATA_ATTRIBUTE = "_feature_data"

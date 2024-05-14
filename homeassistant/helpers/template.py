@@ -38,7 +38,8 @@ import weakref
 
 from awesomeversion import AwesomeVersion
 import jinja2
-from jinja2 import pass_context, pass_environment, pass_eval_context
+from jinja2 import Environment, pass_context, pass_environment
+from jinja2.ext import Extension
 from jinja2.runtime import AsyncLoopContext, LoopContext
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 from jinja2.utils import Namespace
@@ -54,6 +55,8 @@ from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     EVENT_HOMEASSISTANT_START,
     EVENT_HOMEASSISTANT_STOP,
+    EVENT_TEMPLATE_EXTENSION_REGISTERED,
+    EVENT_TEMPLATE_EXTENSION_REMOVED,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
     UnitOfLength,
@@ -91,6 +94,11 @@ from . import (
     location as loc_helper,
 )
 from .singleton import singleton
+from .template_extensions import (
+    ContextAwareTemplateExtension,
+    HassAwareTemplateExtension,
+    TemplateExtensionRegistry,
+)
 from .translation import async_translate_state
 from .typing import TemplateVarsType
 
@@ -210,6 +218,10 @@ def async_setup(hass: HomeAssistant) -> bool:
             if new_size > current_size:
                 lru.set_size(new_size)
 
+    @callback
+    def _clear_tpl_env_cache(_: Any) -> None:
+        Template.clear_env_cache(hass)
+
     from .event import (  # pylint: disable=import-outside-toplevel
         async_track_time_interval,
     )
@@ -219,6 +231,8 @@ def async_setup(hass: HomeAssistant) -> bool:
     )
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, _async_adjust_lru_sizes)
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, callback(lambda _: cancel()))
+    hass.bus.async_listen(EVENT_TEMPLATE_EXTENSION_REGISTERED, _clear_tpl_env_cache)
+    hass.bus.async_listen(EVENT_TEMPLATE_EXTENSION_REMOVED, _clear_tpl_env_cache)
     return True
 
 
@@ -507,7 +521,7 @@ class Template:
             return _NO_HASS_ENV
         # Bypass cache if a custom log function is specified
         if self._log_fn is not None:
-            return TemplateEnvironment(
+            return self._create_env(
                 self.hass, self._limited, self._strict, self._log_fn
             )
         if self._limited:
@@ -516,11 +530,64 @@ class Template:
             wanted_env = _ENVIRONMENT_STRICT
         else:
             wanted_env = _ENVIRONMENT
-        if (ret := self.hass.data.get(wanted_env)) is None:
-            ret = self.hass.data[wanted_env] = TemplateEnvironment(
+        ret: TemplateEnvironment | None = self.hass.data.get(wanted_env)
+        if ret is None:
+            ret = self.hass.data[wanted_env] = self._create_env(
                 self.hass, self._limited, self._strict, self._log_fn
             )
         return ret
+
+    def _create_env(
+        self,
+        hass: HomeAssistant | None,
+        limited: bool | None = False,
+        strict: bool | None = False,
+        log_fn: Callable[[int, str], None] | None = None,
+    ) -> TemplateEnvironment:
+        """Create a new environment."""
+        registry = TemplateExtensionRegistry.get_instance()
+        extensions = [
+            self._wrap_template_extension(ext, limited or False, strict or False)
+            for ext in registry.async_extensions().values()
+        ]
+        return TemplateEnvironment(
+            hass, limited or False, strict or False, log_fn, extensions
+        )
+
+    def _wrap_template_extension(
+        self,
+        extension_class: type[HassAwareTemplateExtension],
+        limited: bool = False,
+        strict: bool = False,
+    ) -> type[ContextAwareTemplateExtension]:
+        """Wrap a HassAwareTemplateExtension with the limited and strict context."""
+        if not issubclass(extension_class, HassAwareTemplateExtension):
+            raise TypeError(
+                "Expected extension_class to be a subclass of HassAwareTemplateExtension"
+            )
+
+        class ContextAwareTemplateExtensionWrapper(
+            extension_class,  # type: ignore[valid-type,misc]
+            ContextAwareTemplateExtension,
+        ):
+            """Context aware TemplateExtension wrapper."""
+
+            def __init__(self, environment: Environment) -> None:
+                """Initialize the extension."""
+                extension_class.__init__(
+                    self, environment, limited, strict, _render_info
+                )
+
+        return ContextAwareTemplateExtensionWrapper
+
+    @staticmethod
+    def clear_env_cache(hass: HomeAssistant) -> None:
+        """Clear the template environment cache."""
+        if not isinstance(hass, HomeAssistant):
+            raise TypeError("Expected hass to be a HomeAssistant instance")
+        hass.data[_ENVIRONMENT] = None
+        hass.data[_ENVIRONMENT_LIMITED] = None
+        hass.data[_ENVIRONMENT_STRICT] = None
 
     def ensure_valid(self) -> None:
         """Return if template is valid."""
@@ -706,6 +773,7 @@ class Template:
 
         render_info = RenderInfo(self)
 
+        # pylint: disable=protected-access
         if self.is_static:
             render_info._result = self.template.strip()  # noqa: SLF001
             render_info._freeze_static()  # noqa: SLF001
@@ -1152,6 +1220,7 @@ class TemplateStateFromEntityId(TemplateStateBase):
 _create_template_state_no_collect = partial(TemplateState, collect=False)
 
 
+# deprecated since 2024.XX
 def _collect_state(hass: HomeAssistant, entity_id: str) -> None:
     if (entity_collect := _render_info.get()) is not None:
         entity_collect.entities.add(entity_id)  # type: ignore[attr-defined]
@@ -1201,6 +1270,7 @@ def _get_template_state_from_state(
     return _template_state(hass, state)
 
 
+# deprecated since 2024.XX
 def _resolve_state(
     hass: HomeAssistant, entity_id_or_state: Any
 ) -> State | TemplateState | None:
@@ -1291,6 +1361,7 @@ def expand(hass: HomeAssistant, *args: Any) -> Iterable[State]:
     return list(found.values())
 
 
+# deprecated since 2024.XX
 def device_entities(hass: HomeAssistant, _device_id: str) -> Iterable[str]:
     """Get entity ids for entities tied to a device."""
     entity_reg = entity_registry.async_get(hass)
@@ -1298,6 +1369,7 @@ def device_entities(hass: HomeAssistant, _device_id: str) -> Iterable[str]:
     return [entry.entity_id for entry in entries]
 
 
+# deprecated since 2024.XX
 def integration_entities(hass: HomeAssistant, entry_name: str) -> Iterable[str]:
     """Get entity ids for entities tied to an integration/domain.
 
@@ -1334,6 +1406,7 @@ def integration_entities(hass: HomeAssistant, entry_name: str) -> Iterable[str]:
     ]
 
 
+# deprecated since 2024.XX
 def config_entry_id(hass: HomeAssistant, entity_id: str) -> str | None:
     """Get an config entry ID from an entity ID."""
     entity_reg = entity_registry.async_get(hass)
@@ -1342,6 +1415,7 @@ def config_entry_id(hass: HomeAssistant, entity_id: str) -> str | None:
     return None
 
 
+# deprecated since 2024.XX
 def device_id(hass: HomeAssistant, entity_id_or_device_name: str) -> str | None:
     """Get a device ID from an entity ID or device name."""
     entity_reg = entity_registry.async_get(hass)
@@ -1352,8 +1426,8 @@ def device_id(hass: HomeAssistant, entity_id_or_device_name: str) -> str | None:
     dev_reg = device_registry.async_get(hass)
     return next(
         (
-            device_id
-            for device_id, device in dev_reg.devices.items()
+            id
+            for id, device in dev_reg.devices.items()
             if (name := device.name_by_user or device.name)
             and (str(entity_id_or_device_name) == name)
         ),
@@ -1361,6 +1435,7 @@ def device_id(hass: HomeAssistant, entity_id_or_device_name: str) -> str | None:
     )
 
 
+# deprecated since 2024.XX
 def device_attr(hass: HomeAssistant, device_or_entity_id: str, attr_name: str) -> Any:
     """Get the device specific attribute."""
     device_reg = device_registry.async_get(hass)
@@ -1379,6 +1454,7 @@ def device_attr(hass: HomeAssistant, device_or_entity_id: str, attr_name: str) -
     return getattr(device, attr_name)
 
 
+# deprecated since 2024.XX
 def is_device_attr(
     hass: HomeAssistant, device_or_entity_id: str, attr_name: str, attr_value: Any
 ) -> bool:
@@ -1386,6 +1462,7 @@ def is_device_attr(
     return bool(device_attr(hass, device_or_entity_id, attr_name) == attr_value)
 
 
+# deprecated since 2024.XX
 def issues(hass: HomeAssistant) -> dict[tuple[str, str], dict[str, Any]]:
     """Return all open issues."""
     current_issues = issue_registry.async_get(hass).issues
@@ -1393,6 +1470,7 @@ def issues(hass: HomeAssistant) -> dict[tuple[str, str], dict[str, Any]]:
     return {k: v.to_json() for (k, v) in current_issues.items()}
 
 
+# deprecated since 2024.XX
 def issue(hass: HomeAssistant, domain: str, issue_id: str) -> dict[str, Any] | None:
     """Get issue by domain and issue_id."""
     result = issue_registry.async_get(hass).async_get_issue(domain, issue_id)
@@ -1401,12 +1479,14 @@ def issue(hass: HomeAssistant, domain: str, issue_id: str) -> dict[str, Any] | N
     return None
 
 
+# deprecated since 2024.XX
 def floors(hass: HomeAssistant) -> Iterable[str | None]:
     """Return all floors."""
     floor_registry = fr.async_get(hass)
     return [floor.floor_id for floor in floor_registry.async_list_floors()]
 
 
+# deprecated since 2024.XX
 def floor_id(hass: HomeAssistant, lookup_value: Any) -> str | None:
     """Get the floor ID from a floor name."""
     floor_registry = fr.async_get(hass)
@@ -1421,6 +1501,7 @@ def floor_id(hass: HomeAssistant, lookup_value: Any) -> str | None:
     return None
 
 
+# deprecated since 2024.XX
 def floor_name(hass: HomeAssistant, lookup_value: str) -> str | None:
     """Get the floor name from a floor id."""
     floor_registry = fr.async_get(hass)
@@ -1458,7 +1539,8 @@ def floor_areas(hass: HomeAssistant, floor_id_or_name: str) -> Iterable[str]:
 
 def areas(hass: HomeAssistant) -> Iterable[str | None]:
     """Return all areas."""
-    return list(area_registry.async_get(hass).areas)
+    area_reg = area_registry.async_get(hass)
+    return [area.id for area in area_reg.async_list_areas()]
 
 
 def area_id(hass: HomeAssistant, lookup_value: str) -> str | None:
@@ -1492,6 +1574,7 @@ def area_id(hass: HomeAssistant, lookup_value: str) -> str | None:
     return None
 
 
+# deprecated since 2024.XX
 def _get_area_name(area_reg: area_registry.AreaRegistry, valid_area_id: str) -> str:
     """Get area name from valid area ID."""
     area = area_reg.async_get_area(valid_area_id)
@@ -1499,6 +1582,7 @@ def _get_area_name(area_reg: area_registry.AreaRegistry, valid_area_id: str) -> 
     return area.name
 
 
+# deprecated since 2024.XX
 def area_name(hass: HomeAssistant, lookup_value: str) -> str | None:
     """Get the area name from an area id, device id, or entity id."""
     area_reg = area_registry.async_get(hass)
@@ -1534,6 +1618,7 @@ def area_name(hass: HomeAssistant, lookup_value: str) -> str | None:
     return None
 
 
+# deprecated since 2024.XX
 def area_entities(hass: HomeAssistant, area_id_or_name: str) -> Iterable[str]:
     """Return entities for a given area ID or name."""
     _area_id: str | None
@@ -1564,6 +1649,7 @@ def area_entities(hass: HomeAssistant, area_id_or_name: str) -> Iterable[str]:
     return entity_ids
 
 
+# deprecated since 2024.XX
 def area_devices(hass: HomeAssistant, area_id_or_name: str) -> Iterable[str]:
     """Return device IDs for a given area ID or name."""
     _area_id: str | None
@@ -1580,11 +1666,12 @@ def area_devices(hass: HomeAssistant, area_id_or_name: str) -> Iterable[str]:
     return [entry.id for entry in entries]
 
 
+# deprecated since 2024.XX
 def labels(hass: HomeAssistant, lookup_value: Any = None) -> Iterable[str | None]:
     """Return all labels, or those from a area ID, device ID, or entity ID."""
     label_reg = label_registry.async_get(hass)
     if lookup_value is None:
-        return list(label_reg.labels)
+        return [label.label_id for label in label_reg.async_list_labels()]
 
     ent_reg = entity_registry.async_get(hass)
 
@@ -1614,6 +1701,7 @@ def labels(hass: HomeAssistant, lookup_value: Any = None) -> Iterable[str | None
     return []
 
 
+# deprecated since 2024.XX
 def label_id(hass: HomeAssistant, lookup_value: Any) -> str | None:
     """Get the label ID from a label name."""
     label_reg = label_registry.async_get(hass)
@@ -1622,6 +1710,7 @@ def label_id(hass: HomeAssistant, lookup_value: Any) -> str | None:
     return None
 
 
+# deprecated since 2024.XX
 def label_name(hass: HomeAssistant, lookup_value: str) -> str | None:
     """Get the label name from a label ID."""
     label_reg = label_registry.async_get(hass)
@@ -1630,6 +1719,7 @@ def label_name(hass: HomeAssistant, lookup_value: str) -> str | None:
     return None
 
 
+# deprecated since 2024.XX
 def _label_id_or_name(hass: HomeAssistant, label_id_or_name: str) -> str | None:
     """Get the label ID from a label name or ID."""
     # If label_name returns a value, we know the input was an ID, otherwise we
@@ -1639,6 +1729,7 @@ def _label_id_or_name(hass: HomeAssistant, label_id_or_name: str) -> str | None:
     return label_id(hass, label_id_or_name)
 
 
+# deprecated since 2024.XX
 def label_areas(hass: HomeAssistant, label_id_or_name: str) -> Iterable[str]:
     """Return areas for a given label ID or name."""
     if (_label_id := _label_id_or_name(hass, label_id_or_name)) is None:
@@ -1648,6 +1739,7 @@ def label_areas(hass: HomeAssistant, label_id_or_name: str) -> Iterable[str]:
     return [entry.id for entry in entries]
 
 
+# deprecated since 2024.XX
 def label_devices(hass: HomeAssistant, label_id_or_name: str) -> Iterable[str]:
     """Return device IDs for a given label ID or name."""
     if (_label_id := _label_id_or_name(hass, label_id_or_name)) is None:
@@ -1657,6 +1749,7 @@ def label_devices(hass: HomeAssistant, label_id_or_name: str) -> Iterable[str]:
     return [entry.id for entry in entries]
 
 
+# deprecated since 2024.XX
 def label_entities(hass: HomeAssistant, label_id_or_name: str) -> Iterable[str]:
     """Return entities for a given label ID or name."""
     if (_label_id := _label_id_or_name(hass, label_id_or_name)) is None:
@@ -1666,6 +1759,7 @@ def label_entities(hass: HomeAssistant, label_id_or_name: str) -> Iterable[str]:
     return [entry.entity_id for entry in entries]
 
 
+# deprecated since 2024.XX
 def closest(hass, *args):
     """Find closest entity.
 
@@ -1729,6 +1823,7 @@ def closest(hass, *args):
     return loc_helper.closest(latitude, longitude, states)
 
 
+# deprecated since 2024.XX
 def closest_filter(hass, *args):
     """Call closest as a filter. Need to reorder arguments."""
     new_args = list(args[1:])
@@ -1736,6 +1831,7 @@ def closest_filter(hass, *args):
     return closest(hass, *new_args)
 
 
+# deprecated since 2024.XX
 def distance(hass, *args):
     """Calculate distance.
 
@@ -1793,6 +1889,7 @@ def distance(hass, *args):
     )
 
 
+# deprecated since 2024.XX
 def is_hidden_entity(hass: HomeAssistant, entity_id: str) -> bool:
     """Test if an entity is hidden."""
     entity_reg = entity_registry.async_get(hass)
@@ -1800,6 +1897,7 @@ def is_hidden_entity(hass: HomeAssistant, entity_id: str) -> bool:
     return entry is not None and entry.hidden
 
 
+# deprecated since 2024.XX
 def is_state(hass: HomeAssistant, entity_id: str, state: str | list[str]) -> bool:
     """Test if a state is a specific value."""
     state_obj = _get_state(hass, entity_id)
@@ -1808,12 +1906,14 @@ def is_state(hass: HomeAssistant, entity_id: str, state: str | list[str]) -> boo
     )
 
 
+# deprecated since 2024.XX
 def is_state_attr(hass: HomeAssistant, entity_id: str, name: str, value: Any) -> bool:
     """Test if a state's attribute is a specific value."""
     attr = state_attr(hass, entity_id, name)
     return attr is not None and attr == value
 
 
+# deprecated since 2024.XX
 def state_attr(hass: HomeAssistant, entity_id: str, name: str) -> Any:
     """Get a specific attribute from a state."""
     if (state_obj := _get_state(hass, entity_id)) is not None:
@@ -1821,6 +1921,7 @@ def state_attr(hass: HomeAssistant, entity_id: str, name: str) -> Any:
     return None
 
 
+# deprecated since 2024.XX
 def has_value(hass: HomeAssistant, entity_id: str) -> bool:
     """Test if an entity has a valid value."""
     state_obj = _get_state(hass, entity_id)
@@ -1830,6 +1931,7 @@ def has_value(hass: HomeAssistant, entity_id: str) -> bool:
     )
 
 
+# deprecated since 2024.XX
 def now(hass: HomeAssistant) -> datetime:
     """Record fetching now."""
     if (render_info := _render_info.get()) is not None:
@@ -1838,6 +1940,7 @@ def now(hass: HomeAssistant) -> datetime:
     return dt_util.now()
 
 
+# deprecated since 2024.XX
 def utcnow(hass: HomeAssistant) -> datetime:
     """Record fetching utcnow."""
     if (render_info := _render_info.get()) is not None:
@@ -1855,6 +1958,7 @@ def raise_no_default(function: str, value: Any) -> NoReturn:
     )
 
 
+# deprecated since 2024.XX
 def forgiving_round(value, precision=0, method="common", default=_SENTINEL):
     """Filter to round a value."""
     try:
@@ -1877,6 +1981,7 @@ def forgiving_round(value, precision=0, method="common", default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def multiply(value, amount, default=_SENTINEL):
     """Filter to convert value to float and multiply it."""
     try:
@@ -1899,6 +2004,7 @@ def add(value, amount, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def logarithm(value, base=math.e, default=_SENTINEL):
     """Filter and function to get logarithm of the value with a specific base."""
     try:
@@ -1916,6 +2022,7 @@ def logarithm(value, base=math.e, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def sine(value, default=_SENTINEL):
     """Filter and function to get sine of the value."""
     try:
@@ -1926,6 +2033,7 @@ def sine(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def cosine(value, default=_SENTINEL):
     """Filter and function to get cosine of the value."""
     try:
@@ -1936,6 +2044,7 @@ def cosine(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def tangent(value, default=_SENTINEL):
     """Filter and function to get tangent of the value."""
     try:
@@ -1946,6 +2055,7 @@ def tangent(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def arc_sine(value, default=_SENTINEL):
     """Filter and function to get arc sine of the value."""
     try:
@@ -1956,6 +2066,7 @@ def arc_sine(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def arc_cosine(value, default=_SENTINEL):
     """Filter and function to get arc cosine of the value."""
     try:
@@ -1966,6 +2077,7 @@ def arc_cosine(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def arc_tangent(value, default=_SENTINEL):
     """Filter and function to get arc tangent of the value."""
     try:
@@ -1976,6 +2088,7 @@ def arc_tangent(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def arc_tangent2(*args, default=_SENTINEL):
     """Filter and function to calculate four quadrant arc tangent of y / x.
 
@@ -1999,11 +2112,13 @@ def arc_tangent2(*args, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def version(value):
     """Filter and function to get version object of the value."""
     return AwesomeVersion(value)
 
 
+# deprecated since 2024.XX
 def square_root(value, default=_SENTINEL):
     """Filter and function to get square root of the value."""
     try:
@@ -2014,15 +2129,16 @@ def square_root(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def timestamp_custom(value, date_format=DATE_STR_FORMAT, local=True, default=_SENTINEL):
     """Filter to convert given timestamp to format."""
     try:
-        result = dt_util.utc_from_timestamp(value)
+        date = dt_util.utc_from_timestamp(value)
 
         if local:
-            result = dt_util.as_local(result)
+            date = dt_util.as_local(date)
 
-        return result.strftime(date_format)
+        return date.strftime(date_format)
     except (ValueError, TypeError):
         # If timestamp can't be converted
         if default is _SENTINEL:
@@ -2030,6 +2146,7 @@ def timestamp_custom(value, date_format=DATE_STR_FORMAT, local=True, default=_SE
         return default
 
 
+# deprecated since 2024.XX
 def timestamp_local(value, default=_SENTINEL):
     """Filter to convert given timestamp to local date/time."""
     try:
@@ -2041,6 +2158,7 @@ def timestamp_local(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def timestamp_utc(value, default=_SENTINEL):
     """Filter to convert given timestamp to UTC date/time."""
     try:
@@ -2052,6 +2170,7 @@ def timestamp_utc(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def forgiving_as_timestamp(value, default=_SENTINEL):
     """Filter and function which tries to convert value to timestamp."""
     try:
@@ -2062,6 +2181,7 @@ def forgiving_as_timestamp(value, default=_SENTINEL):
         return default
 
 
+# deprecated since 2024.XX
 def as_datetime(value: Any, default: Any = _SENTINEL) -> Any:
     """Filter and to convert a time string or UNIX timestamp to datetime object."""
     # Return datetime.datetime object without changes
@@ -2088,11 +2208,13 @@ def as_datetime(value: Any, default: Any = _SENTINEL) -> Any:
             return default
 
 
+# deprecated since 2024.XX
 def as_timedelta(value: str) -> timedelta | None:
     """Parse a ISO8601 duration like 'PT10M' to a timedelta."""
     return dt_util.parse_duration(value)
 
 
+# deprecated since 2024.XX
 def strptime(string, fmt, default=_SENTINEL):
     """Parse a time string to datetime."""
     try:
@@ -2110,6 +2232,7 @@ def fail_when_undefined(value):
     return value
 
 
+# deprecated since 2024.XX
 def min_max_from_filter(builtin_filter: Any, name: str) -> Any:
     """Convert a built-in min/max Jinja filter to a global function.
 
@@ -2133,6 +2256,7 @@ def min_max_from_filter(builtin_filter: Any, name: str) -> Any:
     return pass_environment(wrapper)
 
 
+# deprecated since 2024.XX
 def average(*args: Any, default: Any = _SENTINEL) -> Any:
     """Filter and function to calculate the arithmetic mean.
 
@@ -2162,6 +2286,7 @@ def average(*args: Any, default: Any = _SENTINEL) -> Any:
         return default
 
 
+# deprecated since 2024.XX
 def median(*args: Any, default: Any = _SENTINEL) -> Any:
     """Filter and function to calculate the median.
 
@@ -2191,6 +2316,7 @@ def median(*args: Any, default: Any = _SENTINEL) -> Any:
         return default
 
 
+# deprecated since 2024.XX
 def statistical_mode(*args: Any, default: Any = _SENTINEL) -> Any:
     """Filter and function to calculate the statistical mode.
 
@@ -2294,6 +2420,7 @@ def _to_tuple(value):
     return tuple(value)
 
 
+# deprecated since 2024.XX
 def _is_datetime(value: Any) -> bool:
     """Return whether a value is a datetime."""
     return isinstance(value, datetime)
@@ -2304,6 +2431,7 @@ def _is_string_like(value: Any) -> bool:
     return isinstance(value, (str, bytes, bytearray))
 
 
+# deprecated since 2024.XX
 def regex_match(value, find="", ignorecase=False):
     """Match value using regex."""
     if not isinstance(value, str):
@@ -2312,9 +2440,11 @@ def regex_match(value, find="", ignorecase=False):
     return bool(_regex_cache(find, flags).match(value))
 
 
+# deprecated since 2024.XX
 _regex_cache = lru_cache(maxsize=128)(re.compile)
 
 
+# deprecated since 2024.XX
 def regex_replace(value="", find="", replace="", ignorecase=False):
     """Replace using regex."""
     if not isinstance(value, str):
@@ -2323,6 +2453,7 @@ def regex_replace(value="", find="", replace="", ignorecase=False):
     return _regex_cache(find, flags).sub(replace, value)
 
 
+# deprecated since 2024.XX
 def regex_search(value, find="", ignorecase=False):
     """Search using regex."""
     if not isinstance(value, str):
@@ -2331,11 +2462,13 @@ def regex_search(value, find="", ignorecase=False):
     return bool(_regex_cache(find, flags).search(value))
 
 
+# deprecated since 2024.XX
 def regex_findall_index(value, find="", index=0, ignorecase=False):
     """Find all matches using regex and then pick specific match index."""
     return regex_findall(value, find, ignorecase)[index]
 
 
+# deprecated since 2024.XX
 def regex_findall(value, find="", ignorecase=False):
     """Find all matches using regex."""
     if not isinstance(value, str):
@@ -2344,21 +2477,25 @@ def regex_findall(value, find="", ignorecase=False):
     return _regex_cache(find, flags).findall(value)
 
 
+# deprecated since 2024.XX
 def bitwise_and(first_value, second_value):
     """Perform a bitwise and operation."""
     return first_value & second_value
 
 
+# deprecated since 2024.XX
 def bitwise_or(first_value, second_value):
     """Perform a bitwise or operation."""
     return first_value | second_value
 
 
+# deprecated since 2024.XX
 def bitwise_xor(first_value, second_value):
     """Perform a bitwise xor operation."""
     return first_value ^ second_value
 
 
+# deprecated since 2024.XX
 def struct_pack(value: Any | None, format_string: str) -> bytes | None:
     """Pack an object into a bytes object."""
     try:
@@ -2377,6 +2514,7 @@ def struct_pack(value: Any | None, format_string: str) -> bytes | None:
         return None
 
 
+# deprecated since 2024.XX
 def struct_unpack(value: bytes, format_string: str, offset: int = 0) -> Any | None:
     """Unpack an object from bytes an return the first native object."""
     try:
@@ -2395,16 +2533,19 @@ def struct_unpack(value: bytes, format_string: str, offset: int = 0) -> Any | No
         return None
 
 
+# deprecated since 2024.XX
 def base64_encode(value):
     """Perform base64 encode."""
     return base64.b64encode(value.encode("utf-8")).decode("utf-8")
 
 
+# deprecated since 2024.XX
 def base64_decode(value):
     """Perform base64 denode."""
     return base64.b64decode(value).decode("utf-8")
 
 
+# deprecated since 2024.XX
 def ordinal(value):
     """Perform ordinal conversion."""
     return str(value) + (
@@ -2414,16 +2555,19 @@ def ordinal(value):
     )
 
 
+# deprecated since 2024.XX
 def from_json(value):
     """Convert a JSON string to an object."""
     return json_loads(value)
 
 
+# deprecated since 2024.XX
 def _to_json_default(obj: Any) -> None:
     """Disable custom types in json serialization."""
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+# deprecated since 2024.XX
 def to_json(
     value: Any,
     ensure_ascii: bool = False,
@@ -2467,6 +2611,7 @@ def random_every_time(context, values):
     return random.choice(values)
 
 
+# deprecated since 2024.XX
 def today_at(hass: HomeAssistant, time_str: str = "") -> datetime:
     """Record fetching now where the time has been replaced with value."""
     if (render_info := _render_info.get()) is not None:
@@ -2484,6 +2629,7 @@ def today_at(hass: HomeAssistant, time_str: str = "") -> datetime:
     return datetime.combine(today, time_today, today.tzinfo)
 
 
+# deprecated since 2024.XX
 def relative_time(hass: HomeAssistant, value: Any) -> Any:
     """Take a datetime and return its "age" as a string.
 
@@ -2511,6 +2657,7 @@ def relative_time(hass: HomeAssistant, value: Any) -> Any:
     return dt_util.get_age(value)
 
 
+# deprecated since 2024.XX
 def time_since(hass: HomeAssistant, value: Any | datetime, precision: int = 1) -> Any:
     """Take a datetime and return its "age" as a string.
 
@@ -2532,7 +2679,7 @@ def time_since(hass: HomeAssistant, value: Any | datetime, precision: int = 1) -
 
     return dt_util.get_age(value, precision)
 
-
+# deprecated since 2024.XX
 def time_until(hass: HomeAssistant, value: Any | datetime, precision: int = 1) -> Any:
     """Take a datetime and return the amount of time until that time as a string.
 
@@ -2554,17 +2701,19 @@ def time_until(hass: HomeAssistant, value: Any | datetime, precision: int = 1) -
 
     return dt_util.get_time_remaining(value, precision)
 
-
+# deprecated since 2024.XX
 def urlencode(value):
     """Urlencode dictionary and return as UTF-8 string."""
     return urllib_urlencode(value).encode("utf-8")
 
 
+# deprecated since 2024.XX
 def slugify(value, separator="_"):
     """Convert a string into a slug, such as what is used for entity ids."""
     return slugify_util(value, separator=separator)
 
 
+# deprecated since 2024.XX
 def iif(
     value: Any, if_true: Any = True, if_false: Any = False, if_none: Any = _SENTINEL
 ) -> Any:
@@ -2729,106 +2878,110 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
         limited: bool | None = False,
         strict: bool | None = False,
         log_fn: Callable[[int, str], None] | None = None,
+        extensions: list[type[Extension]] | None = None,
     ) -> None:
         """Initialise template environment."""
-        super().__init__(undefined=make_logging_undefined(strict, log_fn))
+        super().__init__(
+            undefined=make_logging_undefined(strict, log_fn),
+            extensions=extensions or [],
+        )
         self.hass = hass
         self.template_cache: weakref.WeakValueDictionary[
             str | jinja2.nodes.Template, CodeType | str | None
         ] = weakref.WeakValueDictionary()
         self.add_extension("jinja2.ext.loopcontrols")
-        self.filters["round"] = forgiving_round
-        self.filters["multiply"] = multiply
-        self.filters["add"] = add
-        self.filters["log"] = logarithm
-        self.filters["sin"] = sine
-        self.filters["cos"] = cosine
-        self.filters["tan"] = tangent
-        self.filters["asin"] = arc_sine
-        self.filters["acos"] = arc_cosine
-        self.filters["atan"] = arc_tangent
-        self.filters["atan2"] = arc_tangent2
-        self.filters["sqrt"] = square_root
-        self.filters["as_datetime"] = as_datetime
-        self.filters["as_timedelta"] = as_timedelta
-        self.filters["as_timestamp"] = forgiving_as_timestamp
-        self.filters["as_local"] = dt_util.as_local
-        self.filters["timestamp_custom"] = timestamp_custom
-        self.filters["timestamp_local"] = timestamp_local
-        self.filters["timestamp_utc"] = timestamp_utc
-        self.filters["to_json"] = to_json
-        self.filters["from_json"] = from_json
-        self.filters["is_defined"] = fail_when_undefined
-        self.filters["average"] = average
-        self.filters["median"] = median
-        self.filters["statistical_mode"] = statistical_mode
-        self.filters["random"] = random_every_time
-        self.filters["base64_encode"] = base64_encode
-        self.filters["base64_decode"] = base64_decode
-        self.filters["ordinal"] = ordinal
-        self.filters["regex_match"] = regex_match
-        self.filters["regex_replace"] = regex_replace
-        self.filters["regex_search"] = regex_search
-        self.filters["regex_findall"] = regex_findall
-        self.filters["regex_findall_index"] = regex_findall_index
-        self.filters["bitwise_and"] = bitwise_and
-        self.filters["bitwise_or"] = bitwise_or
-        self.filters["bitwise_xor"] = bitwise_xor
-        self.filters["pack"] = struct_pack
-        self.filters["unpack"] = struct_unpack
-        self.filters["ord"] = ord
-        self.filters["is_number"] = is_number
-        self.filters["float"] = forgiving_float_filter
-        self.filters["int"] = forgiving_int_filter
-        self.filters["slugify"] = slugify
-        self.filters["iif"] = iif
-        self.filters["bool"] = forgiving_boolean
-        self.filters["version"] = version
-        self.filters["contains"] = contains
-        self.globals["log"] = logarithm
-        self.globals["sin"] = sine
-        self.globals["cos"] = cosine
-        self.globals["tan"] = tangent
-        self.globals["sqrt"] = square_root
-        self.globals["pi"] = math.pi
-        self.globals["tau"] = math.pi * 2
-        self.globals["e"] = math.e
-        self.globals["asin"] = arc_sine
-        self.globals["acos"] = arc_cosine
-        self.globals["atan"] = arc_tangent
-        self.globals["atan2"] = arc_tangent2
-        self.globals["float"] = forgiving_float
-        self.globals["as_datetime"] = as_datetime
-        self.globals["as_local"] = dt_util.as_local
-        self.globals["as_timedelta"] = as_timedelta
-        self.globals["as_timestamp"] = forgiving_as_timestamp
-        self.globals["timedelta"] = timedelta
-        self.globals["strptime"] = strptime
-        self.globals["urlencode"] = urlencode
-        self.globals["average"] = average
-        self.globals["median"] = median
-        self.globals["statistical_mode"] = statistical_mode
-        self.globals["max"] = min_max_from_filter(self.filters["max"], "max")
-        self.globals["min"] = min_max_from_filter(self.filters["min"], "min")
-        self.globals["is_number"] = is_number
-        self.globals["set"] = _to_set
-        self.globals["tuple"] = _to_tuple
-        self.globals["int"] = forgiving_int
-        self.globals["pack"] = struct_pack
-        self.globals["unpack"] = struct_unpack
-        self.globals["slugify"] = slugify
-        self.globals["iif"] = iif
-        self.globals["bool"] = forgiving_boolean
-        self.globals["version"] = version
-        self.tests["is_number"] = is_number
-        self.tests["list"] = _is_list
-        self.tests["set"] = _is_set
-        self.tests["tuple"] = _is_tuple
-        self.tests["datetime"] = _is_datetime
-        self.tests["string_like"] = _is_string_like
-        self.tests["match"] = regex_match
-        self.tests["search"] = regex_search
-        self.tests["contains"] = contains
+        # self.filters["round"] = forgiving_round
+        # self.filters["multiply"] = multiply
+        # self.filters["add"] = add
+        # self.filters["log"] = logarithm
+        # self.filters["sin"] = sine
+        # self.filters["cos"] = cosine
+        # self.filters["tan"] = tangent
+        # self.filters["asin"] = arc_sine
+        # self.filters["acos"] = arc_cosine
+        # self.filters["atan"] = arc_tangent
+        # self.filters["atan2"] = arc_tangent2
+        # self.filters["sqrt"] = square_root
+        # self.filters["as_datetime"] = as_datetime
+        # self.filters["as_timedelta"] = as_timedelta
+        # self.filters["as_timestamp"] = forgiving_as_timestamp
+        # self.filters["as_local"] = dt_util.as_local
+        # self.filters["timestamp_custom"] = timestamp_custom
+        # self.filters["timestamp_local"] = timestamp_local
+        # self.filters["timestamp_utc"] = timestamp_utc
+        # self.filters["to_json"] = to_json
+        # self.filters["from_json"] = from_json
+        # self.filters["is_defined"] = fail_when_undefined
+        # self.filters["average"] = average
+        # self.filters["median"] = median
+        # self.filters["statistical_mode"] = statistical_mode
+        # self.filters["random"] = random_every_time
+        # self.filters["base64_encode"] = base64_encode
+        # self.filters["base64_decode"] = base64_decode
+        # self.filters["ordinal"] = ordinal
+        # self.filters["regex_match"] = regex_match
+        # self.filters["regex_replace"] = regex_replace
+        # self.filters["regex_search"] = regex_search
+        # self.filters["regex_findall"] = regex_findall
+        # self.filters["regex_findall_index"] = regex_findall_index
+        # self.filters["bitwise_and"] = bitwise_and
+        # self.filters["bitwise_or"] = bitwise_or
+        # self.filters["bitwise_xor"] = bitwise_xor
+        # self.filters["pack"] = struct_pack
+        # self.filters["unpack"] = struct_unpack
+        # self.filters["ord"] = ord
+        # self.filters["is_number"] = is_number
+        # self.filters["float"] = forgiving_float_filter
+        # self.filters["int"] = forgiving_int_filter
+        # self.filters["slugify"] = slugify
+        # self.filters["iif"] = iif
+        # self.filters["bool"] = forgiving_boolean
+        # self.filters["version"] = version
+        # self.filters["contains"] = contains
+        # self.globals["log"] = logarithm
+        # self.globals["sin"] = sine
+        # self.globals["cos"] = cosine
+        # self.globals["tan"] = tangent
+        # self.globals["sqrt"] = square_root
+        # self.globals["pi"] = math.pi
+        # self.globals["tau"] = math.pi * 2
+        # self.globals["e"] = math.e
+        # self.globals["asin"] = arc_sine
+        # self.globals["acos"] = arc_cosine
+        # self.globals["atan"] = arc_tangent
+        # self.globals["atan2"] = arc_tangent2
+        # self.globals["float"] = forgiving_float
+        # self.globals["as_datetime"] = as_datetime
+        # self.globals["as_local"] = dt_util.as_local
+        # self.globals["as_timedelta"] = as_timedelta
+        # self.globals["as_timestamp"] = forgiving_as_timestamp
+        # self.globals["timedelta"] = timedelta
+        # self.globals["strptime"] = strptime
+        # self.globals["urlencode"] = urlencode
+        # self.globals["average"] = average
+        # self.globals["median"] = median
+        # self.globals["statistical_mode"] = statistical_mode
+        # self.globals["max"] = min_max_from_filter(self.filters["max"], "max")
+        # self.globals["min"] = min_max_from_filter(self.filters["min"], "min")
+        # self.globals["is_number"] = is_number
+        # self.globals["set"] = _to_set
+        # self.globals["tuple"] = _to_tuple
+        # self.globals["int"] = forgiving_int
+        # self.globals["pack"] = struct_pack
+        # self.globals["unpack"] = struct_unpack
+        # self.globals["slugify"] = slugify
+        # self.globals["iif"] = iif
+        # self.globals["bool"] = forgiving_boolean
+        # self.globals["version"] = version
+        # self.tests["is_number"] = is_number
+        # self.tests["list"] = _is_list
+        # self.tests["set"] = _is_set
+        # self.tests["tuple"] = _is_tuple
+        # self.tests["datetime"] = _is_datetime
+        # self.tests["string_like"] = _is_string_like
+        # self.tests["match"] = regex_match
+        # self.tests["search"] = regex_search
+        # self.tests["contains"] = contains
 
         if hass is None:
             return
@@ -2855,72 +3008,72 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
 
             return jinja_context(wrapper)
 
-        self.globals["device_entities"] = hassfunction(device_entities)
-        self.filters["device_entities"] = self.globals["device_entities"]
+        # self.globals["device_entities"] = hassfunction(device_entities)
+        # self.filters["device_entities"] = self.globals["device_entities"]
 
-        self.globals["device_attr"] = hassfunction(device_attr)
-        self.filters["device_attr"] = self.globals["device_attr"]
+        # self.globals["device_attr"] = hassfunction(device_attr)
+        # self.filters["device_attr"] = self.globals["device_attr"]
 
-        self.globals["is_device_attr"] = hassfunction(is_device_attr)
-        self.tests["is_device_attr"] = hassfunction(is_device_attr, pass_eval_context)
+        # self.globals["is_device_attr"] = hassfunction(is_device_attr)
+        # self.tests["is_device_attr"] = hassfunction(is_device_attr, pass_eval_context)
 
-        self.globals["config_entry_id"] = hassfunction(config_entry_id)
-        self.filters["config_entry_id"] = self.globals["config_entry_id"]
+        # self.globals["config_entry_id"] = hassfunction(config_entry_id)
+        # self.filters["config_entry_id"] = self.globals["config_entry_id"]
 
-        self.globals["device_id"] = hassfunction(device_id)
-        self.filters["device_id"] = self.globals["device_id"]
+        # self.globals["device_id"] = hassfunction(device_id)
+        # self.filters["device_id"] = self.globals["device_id"]
 
-        self.globals["issues"] = hassfunction(issues)
+        # self.globals["issues"] = hassfunction(issues)
 
-        self.globals["issue"] = hassfunction(issue)
-        self.filters["issue"] = self.globals["issue"]
+        # self.globals["issue"] = hassfunction(issue)
+        # self.filters["issue"] = self.globals["issue"]
 
-        self.globals["areas"] = hassfunction(areas)
+        # self.globals["areas"] = hassfunction(areas)
 
-        self.globals["area_id"] = hassfunction(area_id)
-        self.filters["area_id"] = self.globals["area_id"]
+        # self.globals["area_id"] = hassfunction(area_id)
+        # self.filters["area_id"] = self.globals["area_id"]
 
-        self.globals["area_name"] = hassfunction(area_name)
-        self.filters["area_name"] = self.globals["area_name"]
+        # self.globals["area_name"] = hassfunction(area_name)
+        # self.filters["area_name"] = self.globals["area_name"]
 
-        self.globals["area_entities"] = hassfunction(area_entities)
-        self.filters["area_entities"] = self.globals["area_entities"]
+        # self.globals["area_entities"] = hassfunction(area_entities)
+        # self.filters["area_entities"] = self.globals["area_entities"]
 
-        self.globals["area_devices"] = hassfunction(area_devices)
-        self.filters["area_devices"] = self.globals["area_devices"]
+        # self.globals["area_devices"] = hassfunction(area_devices)
+        # self.filters["area_devices"] = self.globals["area_devices"]
 
-        self.globals["floors"] = hassfunction(floors)
-        self.filters["floors"] = self.globals["floors"]
+        # self.globals["floors"] = hassfunction(floors)
+        # self.filters["floors"] = self.globals["floors"]
 
-        self.globals["floor_id"] = hassfunction(floor_id)
-        self.filters["floor_id"] = self.globals["floor_id"]
+        # self.globals["floor_id"] = hassfunction(floor_id)
+        # self.filters["floor_id"] = self.globals["floor_id"]
 
-        self.globals["floor_name"] = hassfunction(floor_name)
-        self.filters["floor_name"] = self.globals["floor_name"]
+        # self.globals["floor_name"] = hassfunction(floor_name)
+        # self.filters["floor_name"] = self.globals["floor_name"]
 
-        self.globals["floor_areas"] = hassfunction(floor_areas)
-        self.filters["floor_areas"] = self.globals["floor_areas"]
+        # self.globals["floor_areas"] = hassfunction(floor_areas)
+        # self.filters["floor_areas"] = self.globals["floor_areas"]
 
-        self.globals["integration_entities"] = hassfunction(integration_entities)
-        self.filters["integration_entities"] = self.globals["integration_entities"]
+        # self.globals["integration_entities"] = hassfunction(integration_entities)
+        # self.filters["integration_entities"] = self.globals["integration_entities"]
 
-        self.globals["labels"] = hassfunction(labels)
-        self.filters["labels"] = self.globals["labels"]
+        # self.globals["labels"] = hassfunction(labels)
+        # self.filters["labels"] = self.globals["labels"]
 
-        self.globals["label_id"] = hassfunction(label_id)
-        self.filters["label_id"] = self.globals["label_id"]
+        # self.globals["label_id"] = hassfunction(label_id)
+        # self.filters["label_id"] = self.globals["label_id"]
 
-        self.globals["label_name"] = hassfunction(label_name)
-        self.filters["label_name"] = self.globals["label_name"]
+        # self.globals["label_name"] = hassfunction(label_name)
+        # self.filters["label_name"] = self.globals["label_name"]
 
-        self.globals["label_areas"] = hassfunction(label_areas)
-        self.filters["label_areas"] = self.globals["label_areas"]
+        # self.globals["label_areas"] = hassfunction(label_areas)
+        # self.filters["label_areas"] = self.globals["label_areas"]
 
-        self.globals["label_devices"] = hassfunction(label_devices)
-        self.filters["label_devices"] = self.globals["label_devices"]
+        # self.globals["label_devices"] = hassfunction(label_devices)
+        # self.filters["label_devices"] = self.globals["label_devices"]
 
-        self.globals["label_entities"] = hassfunction(label_entities)
-        self.filters["label_entities"] = self.globals["label_entities"]
+        # self.globals["label_entities"] = hassfunction(label_entities)
+        # self.filters["label_entities"] = self.globals["label_entities"]
 
         if limited:
             # Only device_entities is available to limited templates, mark other
@@ -2986,38 +3139,38 @@ class TemplateEnvironment(ImmutableSandboxedEnvironment):
                 self.filters[test] = unsupported(test)
             return
 
-        self.globals["expand"] = hassfunction(expand)
-        self.filters["expand"] = self.globals["expand"]
-        self.globals["closest"] = hassfunction(closest)
-        self.filters["closest"] = hassfunction(closest_filter)
-        self.globals["distance"] = hassfunction(distance)
-        self.globals["is_hidden_entity"] = hassfunction(is_hidden_entity)
-        self.tests["is_hidden_entity"] = hassfunction(
-            is_hidden_entity, pass_eval_context
-        )
-        self.globals["is_state"] = hassfunction(is_state)
-        self.tests["is_state"] = hassfunction(is_state, pass_eval_context)
-        self.globals["is_state_attr"] = hassfunction(is_state_attr)
-        self.tests["is_state_attr"] = hassfunction(is_state_attr, pass_eval_context)
-        self.globals["state_attr"] = hassfunction(state_attr)
-        self.filters["state_attr"] = self.globals["state_attr"]
-        self.globals["states"] = AllStates(hass)
-        self.filters["states"] = self.globals["states"]
-        self.globals["state_translated"] = StateTranslated(hass)
-        self.filters["state_translated"] = self.globals["state_translated"]
-        self.globals["has_value"] = hassfunction(has_value)
-        self.filters["has_value"] = self.globals["has_value"]
-        self.tests["has_value"] = hassfunction(has_value, pass_eval_context)
-        self.globals["utcnow"] = hassfunction(utcnow)
-        self.globals["now"] = hassfunction(now)
-        self.globals["relative_time"] = hassfunction(relative_time)
-        self.filters["relative_time"] = self.globals["relative_time"]
-        self.globals["time_since"] = hassfunction(time_since)
-        self.filters["time_since"] = self.globals["time_since"]
-        self.globals["time_until"] = hassfunction(time_until)
-        self.filters["time_until"] = self.globals["time_until"]
-        self.globals["today_at"] = hassfunction(today_at)
-        self.filters["today_at"] = self.globals["today_at"]
+        # self.globals["expand"] = hassfunction(expand)
+        # self.filters["expand"] = self.globals["expand"]
+        # self.globals["closest"] = hassfunction(closest)
+        # self.filters["closest"] = hassfunction(closest_filter)
+        # self.globals["distance"] = hassfunction(distance)
+        # self.globals["is_hidden_entity"] = hassfunction(is_hidden_entity)
+        # self.tests["is_hidden_entity"] = hassfunction(
+        #    is_hidden_entity, pass_eval_context
+        # )
+        # self.globals["is_state"] = hassfunction(is_state)
+        # self.tests["is_state"] = hassfunction(is_state, pass_eval_context)
+        # self.globals["is_state_attr"] = hassfunction(is_state_attr)
+        # self.tests["is_state_attr"] = hassfunction(is_state_attr, pass_eval_context)
+        # self.globals["state_attr"] = hassfunction(state_attr)
+        # self.filters["state_attr"] = self.globals["state_attr"]
+        # self.globals["states"] = AllStates(hass)
+        # self.filters["states"] = self.globals["states"]
+        # self.globals["state_translated"] = StateTranslated(hass)
+        # self.filters["state_translated"] = self.globals["state_translated"]
+        # self.globals["has_value"] = hassfunction(has_value)
+        # self.filters["has_value"] = self.globals["has_value"]
+        # self.tests["has_value"] = hassfunction(has_value, pass_eval_context)
+        # self.globals["utcnow"] = hassfunction(utcnow)
+        # self.globals["now"] = hassfunction(now)
+        # self.globals["relative_time"] = hassfunction(relative_time)
+        # self.filters["relative_time"] = self.globals["relative_time"]
+        # self.globals["time_since"] = hassfunction(time_since)
+        # self.filters["time_since"] = self.globals["time_since"]
+        # self.globals["time_until"] = hassfunction(time_until)
+        # self.filters["time_until"] = self.globals["time_until"]
+        # self.globals["today_at"] = hassfunction(today_at)
+        # self.filters["today_at"] = self.globals["today_at"]
 
     def is_safe_callable(self, obj):
         """Test if callback is safe."""

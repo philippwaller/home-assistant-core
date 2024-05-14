@@ -2883,7 +2883,7 @@ class Config:
         """
         self._store = self._ConfigStore(self.hass)
 
-    def distance(self, lat: float, lon: float) -> float | None:
+    def distance(self, lat: float | None, lon: float | None) -> float | None:
         """Calculate distance from Home Assistant.
 
         Async friendly.

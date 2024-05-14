@@ -25,7 +25,12 @@ from homeassistant.const import (
 )
 import homeassistant.core as ha
 from homeassistant.exceptions import HomeAssistantError, Unauthorized, UnknownUser
-from homeassistant.helpers import config_validation as cv, recorder, restore_state
+from homeassistant.helpers import (
+    config_validation as cv,
+    recorder,
+    restore_state,
+    template_extensions,
+)
 from homeassistant.helpers.entity_component import async_update_entity
 from homeassistant.helpers.service import (
     async_extract_config_entry_ids,
@@ -34,6 +39,7 @@ from homeassistant.helpers.service import (
 )
 from homeassistant.helpers.signal import KEY_HA_STOP
 from homeassistant.helpers.template import async_load_custom_templates
+from homeassistant.helpers.template_extensions import TemplateExtensionRegistry
 from homeassistant.helpers.typing import ConfigType
 
 # The scene integration will do a late import of scene
@@ -49,6 +55,17 @@ from .const import (
     SERVICE_HOMEASSISTANT_STOP,
 )
 from .exposed_entities import ExposedEntities
+from .template_extensions import (
+    BinaryTemplateExtension,
+    ControlFlowExtension,
+    CoreExtension,
+    DatatypeTemplateExtension,
+    DatetimeTemplateExtension,
+    MathTemplateExtension,
+    RegexTemplateExtension,
+    StatisticTemplateExtension,
+    StringTemplateExtension,
+)
 
 ATTR_ENTRY_ID = "entry_id"
 ATTR_SAFE_MODE = "safe_mode"
@@ -74,6 +91,18 @@ SCHEMA_RELOAD_CONFIG_ENTRY = vol.All(
 SCHEMA_RESTART = vol.Schema({vol.Optional(ATTR_SAFE_MODE, default=False): bool})
 
 SHUTDOWN_SERVICES = (SERVICE_HOMEASSISTANT_STOP, SERVICE_HOMEASSISTANT_RESTART)
+
+TEMPLATE_EXTENSIONS: list[type[template_extensions.TemplateExtension]] = [
+    BinaryTemplateExtension,
+    ControlFlowExtension,
+    CoreExtension,
+    DatatypeTemplateExtension,
+    DatetimeTemplateExtension,
+    MathTemplateExtension,
+    RegexTemplateExtension,
+    StatisticTemplateExtension,
+    StringTemplateExtension,
+]
 
 
 async def async_setup(hass: ha.HomeAssistant, config: ConfigType) -> bool:  # noqa: C901
@@ -379,6 +408,9 @@ async def async_setup(hass: ha.HomeAssistant, config: ConfigType) -> bool:  # no
     await exposed_entities.async_initialize()
     hass.data[DATA_EXPOSED_ENTITIES] = exposed_entities
     async_set_stop_handler(hass, _async_stop)
+
+    registry = TemplateExtensionRegistry.get_instance()
+    [registry.async_register(extension) for extension in TEMPLATE_EXTENSIONS]
 
     return True
 
