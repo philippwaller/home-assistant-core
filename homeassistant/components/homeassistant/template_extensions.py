@@ -4,7 +4,7 @@ import base64
 import collections
 from collections.abc import Iterable
 from contextvars import ContextVar
-from datetime import datetime, timedelta, time
+from datetime import date, datetime, timedelta, time
 from functools import lru_cache
 import json
 import logging
@@ -520,11 +520,11 @@ class MathTemplateExtension(BaseTemplateExtension):
         return random.choice(values)
 
     @TemplateExtension.filter(
-            name="add",
-            limited=True,
-            categories=[FeatureCategories.MATH.value],
-        )
-    def add(self, value, amount, default=_SENTINEL) ->Any:
+        name="add",
+        limited=True,
+        categories=[FeatureCategories.MATH.value],
+    )
+    def add(self, value, amount, default=_SENTINEL) -> Any:
         """Filter to convert value to float and add it."""
         try:
             return float(value) + amount
