@@ -899,6 +899,143 @@ class DatetimeTemplateExtension(BaseTemplateExtension):
         """Return whether a value is a datetime."""
         return isinstance(value, datetime)
 
+    @TemplateExtension.function(
+        name="utcnow",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    def utcnow(self) -> datetime:
+        """Record fetching utcnow."""
+        if (render_info := self.render_info.get()) is not None:
+            render_info.has_time = True
+
+        return dt_util.utcnow()
+
+    @TemplateExtension.function(
+        name="now",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    def now(self) -> datetime:
+        """Record fetching now."""
+        if (render_info := self.render_info.get()) is not None:
+            render_info.has_time = True
+
+        return dt_util.now()
+
+    @TemplateExtension.filter(
+        name="relative_time",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    @TemplateExtension.function(
+        name="relative_time",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    def relative_time(self, value: Any) -> Any:
+        """Take a datetime and return its "age" as a string.
+
+        The age can be in second, minute, hour, day, month or year. Only the
+        biggest unit is considered, e.g. if it's 2 days and 3 hours, "2 days" will
+        be returned.
+        If the input datetime is in the future,
+        the input datetime will be returned.
+
+        If the input are not a datetime object the input will be returned unmodified.
+
+        Note: This template function is deprecated in favor of `time_until`, but is still
+        supported so as not to break old templates.
+        """
+        if (render_info := self.render_info.get()) is not None:
+            render_info.has_time = True
+
+        if not isinstance(value, datetime):
+            return value
+        if not value.tzinfo:
+            value = dt_util.as_local(value)
+        if dt_util.now() < value:
+            return value
+        return dt_util.get_age(value)
+
+    @TemplateExtension.filter(
+        name="today_at",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    @TemplateExtension.function(
+        name="today_at",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    def today_at(self, time_str: str = "") -> datetime:
+        """Record fetching now where the time has been replaced with value."""
+        if (render_info := self.render_info.get()) is not None:
+            render_info.has_time = True
+
+        today = dt_util.start_of_local_day()
+        if not time_str:
+            return today
+
+        if (time_today := dt_util.parse_time(time_str)) is None:
+            raise ValueError(
+                f"could not convert {type(time_str).__name__} to datetime: '{time_str}'"
+            )
+
+        return datetime.combine(today, time_today, today.tzinfo)
+
+    @TemplateExtension.filter(
+        name="time_since",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    @TemplateExtension.function(
+        name="time_since",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    def time_since(self, value: Any | datetime, precision: int = 1) -> Any:
+        """Take a datetime and return its "age" as a string.
+
+        The age can be in seconds, minutes, hours, days, months and year.
+
+        precision is the number of units to return, with the last unit rounded.
+
+        If the value not a datetime object the input will be returned unmodified.
+        """
+        if (render_info := self.render_info.get()) is not None:
+            render_info.has_time = True
+
+        if not isinstance(value, datetime):
+            return value
+        if not value.tzinfo:
+            value = dt_util.as_local(value)
+        if dt_util.now() < value:
+            return value
+
+        return dt_util.get_age(value, precision)
+
+    @TemplateExtension.filter(
+        name="time_until",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    @TemplateExtension.function(
+        name="time_until",
+        categories=[FeatureCategories.DATETIME.value],
+    )
+    def time_until(self, value: Any | datetime, precision: int = 1) -> Any:
+        """Take a datetime and return the amount of time until that time as a string.
+
+        The time until can be in seconds, minutes, hours, days, months and years.
+
+        precision is the number of units to return, with the last unit rounded.
+
+        If the value not a datetime object the input will be returned unmodified.
+        """
+        if (render_info := self.render_info.get()) is not None:
+            render_info.has_time = True
+
+        if not isinstance(value, datetime):
+            return value
+        if not value.tzinfo:
+            value = dt_util.as_local(value)
+        if dt_util.now() > value:
+            return value
+
+        return dt_util.get_time_remaining(value, precision)
+
 
 class DatatypeTemplateExtension(BaseTemplateExtension):
     """A template extension that adds datatype functions."""
@@ -2293,140 +2430,3 @@ class CoreExtension(BaseTemplateExtension):
         return state_obj is not None and (
             state_obj.state not in [STATE_UNAVAILABLE, STATE_UNKNOWN]
         )
-
-    @TemplateExtension.function(
-        name="utcnow",
-        categories=[FeatureCategories.CORE.value],
-    )
-    def utcnow(self) -> datetime:
-        """Record fetching utcnow."""
-        if (render_info := self.render_info.get()) is not None:
-            render_info.has_time = True
-
-        return dt_util.utcnow()
-
-    @TemplateExtension.function(
-        name="now",
-        categories=[FeatureCategories.CORE.value],
-    )
-    def now(self) -> datetime:
-        """Record fetching now."""
-        if (render_info := self.render_info.get()) is not None:
-            render_info.has_time = True
-
-        return dt_util.now()
-
-    @TemplateExtension.filter(
-        name="relative_time",
-        categories=[FeatureCategories.CORE.value],
-    )
-    @TemplateExtension.function(
-        name="relative_time",
-        categories=[FeatureCategories.CORE.value],
-    )
-    def relative_time(self, value: Any) -> Any:
-        """Take a datetime and return its "age" as a string.
-
-        The age can be in second, minute, hour, day, month or year. Only the
-        biggest unit is considered, e.g. if it's 2 days and 3 hours, "2 days" will
-        be returned.
-        If the input datetime is in the future,
-        the input datetime will be returned.
-
-        If the input are not a datetime object the input will be returned unmodified.
-
-        Note: This template function is deprecated in favor of `time_until`, but is still
-        supported so as not to break old templates.
-        """
-        if (render_info := self.render_info.get()) is not None:
-            render_info.has_time = True
-
-        if not isinstance(value, datetime):
-            return value
-        if not value.tzinfo:
-            value = dt_util.as_local(value)
-        if dt_util.now() < value:
-            return value
-        return dt_util.get_age(value)
-
-    @TemplateExtension.filter(
-        name="today_at",
-        categories=[FeatureCategories.CORE.value],
-    )
-    @TemplateExtension.function(
-        name="today_at",
-        categories=[FeatureCategories.CORE.value],
-    )
-    def today_at(self, time_str: str = "") -> datetime:
-        """Record fetching now where the time has been replaced with value."""
-        if (render_info := self.render_info.get()) is not None:
-            render_info.has_time = True
-
-        today = dt_util.start_of_local_day()
-        if not time_str:
-            return today
-
-        if (time_today := dt_util.parse_time(time_str)) is None:
-            raise ValueError(
-                f"could not convert {type(time_str).__name__} to datetime: '{time_str}'"
-            )
-
-        return datetime.combine(today, time_today, today.tzinfo)
-
-    @TemplateExtension.filter(
-        name="time_since",
-        categories=[FeatureCategories.CORE.value],
-    )
-    @TemplateExtension.function(
-        name="time_since",
-        categories=[FeatureCategories.CORE.value],
-    )
-    def time_since(self, value: Any | datetime, precision: int = 1) -> Any:
-        """Take a datetime and return its "age" as a string.
-
-        The age can be in seconds, minutes, hours, days, months and year.
-
-        precision is the number of units to return, with the last unit rounded.
-
-        If the value not a datetime object the input will be returned unmodified.
-        """
-        if (render_info := self.render_info.get()) is not None:
-            render_info.has_time = True
-
-        if not isinstance(value, datetime):
-            return value
-        if not value.tzinfo:
-            value = dt_util.as_local(value)
-        if dt_util.now() < value:
-            return value
-
-        return dt_util.get_age(value, precision)
-
-    @TemplateExtension.filter(
-        name="time_until",
-        categories=[FeatureCategories.CORE.value],
-    )
-    @TemplateExtension.function(
-        name="time_until",
-        categories=[FeatureCategories.CORE.value],
-    )
-    def time_until(self, value: Any | datetime, precision: int = 1) -> Any:
-        """Take a datetime and return the amount of time until that time as a string.
-
-        The time until can be in seconds, minutes, hours, days, months and years.
-
-        precision is the number of units to return, with the last unit rounded.
-
-        If the value not a datetime object the input will be returned unmodified.
-        """
-        if (render_info := self.render_info.get()) is not None:
-            render_info.has_time = True
-
-        if not isinstance(value, datetime):
-            return value
-        if not value.tzinfo:
-            value = dt_util.as_local(value)
-        if dt_util.now() > value:
-            return value
-
-        return dt_util.get_time_remaining(value, precision)
