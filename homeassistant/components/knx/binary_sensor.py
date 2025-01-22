@@ -25,7 +25,7 @@ from homeassistant.helpers.entity_platform import (
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType
 
-from . import KNXModule
+from .knx_module import KNXModule
 from .const import (
     ATTR_COUNTER,
     ATTR_SOURCE,
