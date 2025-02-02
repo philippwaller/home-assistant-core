@@ -349,7 +349,7 @@ class UiSensorConfig(SensorConfig, StorageSerialization):
                                             ): SyncStateSchema(),
                                         }
                                     ),
-                                    {"collapsible": True, "collapsed": True},
+                                    {"collapsible": True},
                                 ),
                             }
                         )

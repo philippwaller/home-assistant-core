@@ -1102,20 +1102,9 @@ class ConfigGroupSchema(SerializableSchema):
         """Represents the configuration for a ConfigGroup in the UI."""
 
         collapsible: bool  # Indicates whether the section can be collapsed by the user.
-        collapsed: bool  # Specifies whether the section is initially collapsed.
 
     UI_OPTIONS_SCHEMA: Final[vol.Schema] = vol.Schema(
-        vol.All(
-            {
-                vol.Optional("collapsible", default=False): bool,
-                vol.Optional("collapsed", default=False): bool,
-            },
-            lambda value: value
-            if value["collapsible"] or not value["collapsed"]
-            else (_ for _ in ()).throw(
-                vol.Invalid("'collapsed' can only be True if 'collapsible' is True.")
-            ),
-        )
+        {vol.Optional("collapsible", default=False): bool}
     )
 
     def __init__(self, schema: vol.Schema, ui_options: UIOptions | None = None) -> None:
@@ -1139,18 +1128,13 @@ class ConfigGroupSchema(SerializableSchema):
     ) -> dict[str, Any]:
         """Convert Section schema into a dictionary representation."""
 
-        result: dict[str, Any] = {
+        return {
             "type": "config_group",
             "ui_options": {
                 "collapsible": value.ui_options["collapsible"],
             },
             "properties": convert(value.schema),
         }
-
-        # Only add collapsed state if collapsible is True
-        if value.ui_options["collapsible"]:
-            result["ui_options"]["collapsed"] = value.ui_options["collapsed"]
-        return result
 
 
 class GroupAddressSchema(SerializableSchema):

@@ -7,6 +7,7 @@ import voluptuous as vol
 from xknx.dpt import DPTVoltage
 
 from homeassistant.components.knx.schema import (
+    ConfigGroupSchema,
     GroupAddressConfigSchema,
     GroupAddressListSchema,
     GroupAddressSchema,
@@ -525,4 +526,156 @@ class TestGroupAddressConfigSchema:
         )
         assert result["properties"] == "converted_schema", (
             f"Test case '{test_name}' failed: 'properties' was not 'converted_schema'."
+        )
+
+
+class TestConfigGroupSchema:
+    """Test class for ConfigGroupSchema validation and serialization."""
+
+    SAMPLE_SCHEMA = vol.Schema({"key": str})
+
+    # Test data for the __call__ method:
+    # (1) test_name: descriptive name for the test
+    # (2) input_value: the data to validate (a dict to be validated by SAMPLE_SCHEMA)
+    # (3) ui_options: the UI options to initialize the ConfigGroupSchema (as a dict) or None for defaults
+    # (4) expected: the expected result – either the validated dict or vol.Invalid if validation should fail
+    CONFIG_GROUP_SCHEMA_CALL_CASES: tuple[
+        tuple[str, dict[str, Any], dict[str, bool] | None, Any], ...
+    ] = (
+        (
+            "valid_default_ui_options",
+            {"key": "hello"},
+            None,  # Defaults to {"collapsible": False}
+            {"key": "hello"},
+        ),
+        (
+            "invalid_schema_input",
+            {"key": 123},
+            None,
+            vol.Invalid,
+        ),
+        (
+            "valid_custom_ui_options",
+            {"key": "world"},
+            {"collapsible": True},
+            {"key": "world"},
+        ),
+    )
+
+    # Test data for invalid UI options during initialization:
+    # (1) test_name: descriptive name for the test
+    # (2) ui_options: the UI options that are invalid
+    CONFIG_GROUP_SCHEMA_INVALID_UI_OPTIONS: tuple[tuple[str, dict[str, Any]], ...] = (
+        (
+            "invalid_ui_options_non_bool",
+            {"collapsible": "yes"},
+        ),
+    )
+
+    # Test data for the serialize method:
+    # (1) test_name: descriptive name for the test
+    # (2) ui_options: the UI options to initialize the ConfigGroupSchema (as a dict) or None for defaults
+    # (3) expected_ui_options: the expected UI options in the serialized output (a dict)
+    CONFIG_GROUP_SCHEMA_SERIALIZE_CASES: tuple[
+        tuple[str, dict[str, bool] | None, dict[str, Any]], ...
+    ] = (
+        (
+            "serialize_default",
+            None,  # Defaults to {"collapsible": False}
+            {"collapsible": False},
+        ),
+        (
+            "serialize_collapsible_true",
+            {"collapsible": True},
+            {"collapsible": True},
+        ),
+    )
+
+    @pytest.mark.parametrize(
+        ("test_name", "input_value", "ui_options", "expected"),
+        CONFIG_GROUP_SCHEMA_CALL_CASES,
+        ids=[case[0] for case in CONFIG_GROUP_SCHEMA_CALL_CASES],
+    )
+    def test_config_group_schema_call(
+        self,
+        hass: HomeAssistant,
+        knx: KNXTestKit,
+        test_name: str,
+        input_value: dict[str, Any],
+        ui_options: ConfigGroupSchema.UIOptions | None,
+        expected: Any,
+    ) -> None:
+        """Test the __call__ method of ConfigGroupSchema.
+
+        It validates input data against SAMPLE_SCHEMA using provided UI options.
+        If 'expected' is vol.Invalid, a vol.Invalid exception should be raised.
+        Otherwise, the output should match 'expected'.
+        """
+        instance = ConfigGroupSchema(self.SAMPLE_SCHEMA, ui_options)
+        if expected == vol.Invalid:
+            with pytest.raises(vol.Invalid):
+                instance(input_value)
+        else:
+            result = instance(input_value)
+            assert result == expected, (
+                f"Test case '{test_name}' failed: Expected {expected}, got {result}."
+            )
+
+    @pytest.mark.parametrize(
+        ("test_name", "ui_options"),
+        CONFIG_GROUP_SCHEMA_INVALID_UI_OPTIONS,
+        ids=[case[0] for case in CONFIG_GROUP_SCHEMA_INVALID_UI_OPTIONS],
+    )
+    def test_config_group_schema_invalid_ui_options(
+        self,
+        hass: HomeAssistant,
+        knx: KNXTestKit,
+        test_name: str,
+        ui_options: ConfigGroupSchema.UIOptions,
+    ) -> None:
+        """Test that constructing ConfigGroupSchema with invalid UI options raises vol.Invalid.
+
+        For example, if 'collapsible' is not a boolean, the UI_OPTIONS_SCHEMA should throw.
+        """
+        with pytest.raises(vol.Invalid):
+            ConfigGroupSchema(self.SAMPLE_SCHEMA, ui_options)
+
+    @pytest.mark.parametrize(
+        ("test_name", "ui_options", "expected_ui_options"),
+        CONFIG_GROUP_SCHEMA_SERIALIZE_CASES,
+        ids=[case[0] for case in CONFIG_GROUP_SCHEMA_SERIALIZE_CASES],
+    )
+    def test_config_group_schema_serialize(
+        self,
+        hass: HomeAssistant,
+        knx: KNXTestKit,
+        test_name: str,
+        ui_options: ConfigGroupSchema.UIOptions | None,
+        expected_ui_options: dict[str, Any],
+    ) -> None:
+        """Test the serialize method of ConfigGroupSchema.
+
+        The serialization should return a dictionary with:
+          - "type": "config_group"
+          - "ui_options": matching expected_ui_options
+          - "properties": the converted schema from a mock converter.
+        """
+
+        def mock_convert(schema: Any) -> Any:
+            return "converted_schema"
+
+        instance = ConfigGroupSchema(self.SAMPLE_SCHEMA, ui_options)
+        result = ConfigGroupSchema.serialize(instance, mock_convert)
+
+        assert isinstance(result, dict), (
+            f"Test case '{test_name}' failed: result is not a dict."
+        )
+        assert result.get("type") == "config_group", (
+            f"Test case '{test_name}' failed: 'type' is not 'config_group'."
+        )
+        assert result.get("properties") == "converted_schema", (
+            f"Test case '{test_name}' failed: 'properties' mismatch."
+        )
+        assert result.get("ui_options") == expected_ui_options, (
+            f"Test case '{test_name}' failed: expected ui_options {expected_ui_options}, got {result.get('ui_options')}."
         )
