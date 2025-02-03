@@ -1,27 +1,139 @@
 """Tests for the schema validators of the KNX integration."""
 
+import gc
 from typing import Any
 
 import pytest
 import voluptuous as vol
-from xknx.dpt import DPTVoltage
+from voluptuous_serialize import UNSUPPORTED
+from xknx.dpt import (
+    DPT2ByteFloat,
+    DPTBase,
+    DPTDecimalFactor,
+    DPTPercentU8,
+    DPTSceneNumber,
+    DPTSwitch,
+    DPTTariff,
+    DPTValue1ByteUnsigned,
+    DPTValue1Ucount,
+    DPTVoltage,
+)
 
 from homeassistant.components.knx.schema import (
     ConfigGroupSchema,
+    DptUtils,
+    EntityConfigGroupSchema,
     GroupAddressConfigSchema,
     GroupAddressListSchema,
     GroupAddressSchema,
+    PlatformConfigSchema,
+    SchemaSerializer,
+    SerializableSchema,
     SyncStateSchema,
 )
 from homeassistant.components.knx.storage.const import (
+    CONF_DEVICE_INFO,
     CONF_DPT,
     CONF_GA_PASSIVE,
     CONF_GA_STATE,
     CONF_GA_WRITE,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_ENTITY_CATEGORY, CONF_NAME, EntityCategory
 
-from .conftest import KNXTestKit
+
+class TestDptUtils:
+    """Test class for DptUtils utility methods using real DPT classes from the xknx library."""
+
+    # Test data for the format_dpt method:
+    # (1) test_name: descriptive name for the test
+    # (2) dpt_class: the DPT class to format
+    # (3) expected: the expected formatted string, or ValueError if an error is expected
+    FORMAT_DPT_CASES: tuple[tuple[str, type, Any], ...] = (
+        ("valid_dpt_binary", DPTSwitch, "1.001"),
+        ("valid_dpt_temperature", DPT2ByteFloat, "9"),
+        ("invalid_non_dpt", int, ValueError),
+    )
+
+    # Test data for the derive_subtypes method:
+    # (1) test_name: descriptive name for the test
+    # (2) input_types: a tuple of DPT classes to process
+    # (3) expected: the expected tuple of derived DPT types
+    DERIVE_SUBTYPES_CASES: tuple[
+        tuple[str, tuple[type, ...], tuple[type, ...]], ...
+    ] = (
+        ("derive_leaf", (DPTSwitch,), (DPTSwitch,)),
+        (
+            "derive_base_class",
+            (DPTValue1ByteUnsigned,),
+            (
+                DPTValue1ByteUnsigned,
+                DPTPercentU8,
+                DPTDecimalFactor,
+                DPTTariff,
+                DPTValue1Ucount,
+                DPTSceneNumber,
+            ),
+        ),
+        (
+            "derive_multiple",
+            (DPTValue1ByteUnsigned, DPTSwitch),
+            (
+                DPTValue1ByteUnsigned,
+                DPTPercentU8,
+                DPTDecimalFactor,
+                DPTTariff,
+                DPTValue1Ucount,
+                DPTSceneNumber,
+                DPTSwitch,
+            ),
+        ),
+    )
+
+    @pytest.mark.parametrize(
+        ("test_name", "dpt_class", "expected"),
+        FORMAT_DPT_CASES,
+        ids=[case[0] for case in FORMAT_DPT_CASES],
+    )
+    def test_format_dpt(
+        self,
+        test_name: str,
+        dpt_class: type[DPTBase],
+        expected: Any,
+    ) -> None:
+        """Test the format_dpt static method of DptUtils.
+
+        - If 'expected' is ValueError, a ValueError should be raised.
+        - Otherwise, the returned string should match 'expected'.
+        """
+        if expected is ValueError:
+            with pytest.raises(ValueError):
+                DptUtils.format_dpt(dpt_class)
+        else:
+            result = DptUtils.format_dpt(dpt_class)
+            assert result == expected, (
+                f"Test case '{test_name}' failed: Expected '{expected}', got '{result}'."
+            )
+
+    @pytest.mark.parametrize(
+        ("test_name", "input_types", "expected"),
+        DERIVE_SUBTYPES_CASES,
+        ids=[case[0] for case in DERIVE_SUBTYPES_CASES],
+    )
+    def test_derive_subtypes(
+        self,
+        test_name: str,
+        input_types: tuple[type, ...],
+        expected: tuple[type, ...],
+    ) -> None:
+        """Test the derive_subtypes static method of DptUtils.
+
+        It should return a tuple of DPT classes from the provided input types
+        that have distinct DPT numbers.
+        """
+        result = DptUtils.derive_subtypes(*input_types)
+        assert result == expected, (
+            f"Test case '{test_name}' failed: Expected {expected}, got {result}."
+        )
 
 
 class TestGroupAddressSchema:
@@ -61,8 +173,6 @@ class TestGroupAddressSchema:
     )
     def test_group_address_schema_call(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         input_value: Any,
         allow_internal: bool,
@@ -113,6 +223,15 @@ class TestGroupAddressSchema:
         )
         assert result["allow_internal_address"] == expected_allow_internal, (
             f"Test case '{test_name}' failed: 'allow_internal_address' mismatch."
+        )
+
+    def test_get_schema(self) -> None:
+        """Test get_schema function."""
+
+        instance = GroupAddressSchema()
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
         )
 
 
@@ -184,8 +303,6 @@ class TestGroupAddressListSchema:
     )
     def test_group_address_list_call(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         input_value: Any,
         allow_internal: bool,
@@ -244,6 +361,15 @@ class TestGroupAddressListSchema:
             f"Test case '{test_name}' failed: allow_internal_addresses mismatch."
         )
 
+    def test_get_schema(self) -> None:
+        """Test get_schema function."""
+
+        instance = GroupAddressListSchema()
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
+        )
+
 
 class TestSyncStateSchema:
     """Test class for SyncStateSchema validation and serialization."""
@@ -285,8 +411,6 @@ class TestSyncStateSchema:
     )
     def test_sync_state_schema_call(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         input_value: Any,
         expected: Any,
@@ -328,6 +452,15 @@ class TestSyncStateSchema:
         assert isinstance(result, dict), "Serialization result must be a dictionary."
         assert result["type"] == "sync_state", (
             f"Test case '{test_name}' failed: 'type' is not 'sync_state'."
+        )
+
+    def test_get_schema(self) -> None:
+        """Test get_schema function."""
+
+        instance = SyncStateSchema()
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
         )
 
 
@@ -448,8 +581,6 @@ class TestGroupAddressConfigSchema:
     )
     def test_constructor_validation(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         constructor_kwargs: dict[str, Any],
         expect_error: bool,
@@ -472,8 +603,6 @@ class TestGroupAddressConfigSchema:
     )
     def test_call_schema(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         constructor_kwargs: dict[str, Any],
         input_data: dict[str, Any],
@@ -503,8 +632,6 @@ class TestGroupAddressConfigSchema:
     )
     def test_serialize(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         constructor_kwargs: dict[str, Any],
     ) -> None:
@@ -526,6 +653,15 @@ class TestGroupAddressConfigSchema:
         )
         assert result["properties"] == "converted_schema", (
             f"Test case '{test_name}' failed: 'properties' was not 'converted_schema'."
+        )
+
+    def test_get_schema(self) -> None:
+        """Test get_schema function."""
+
+        instance = GroupAddressConfigSchema(allowed_dpts=(DPTVoltage,))
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
         )
 
 
@@ -598,8 +734,6 @@ class TestConfigGroupSchema:
     )
     def test_config_group_schema_call(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         input_value: dict[str, Any],
         ui_options: ConfigGroupSchema.UIOptions | None,
@@ -628,8 +762,6 @@ class TestConfigGroupSchema:
     )
     def test_config_group_schema_invalid_ui_options(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         ui_options: ConfigGroupSchema.UIOptions,
     ) -> None:
@@ -647,8 +779,6 @@ class TestConfigGroupSchema:
     )
     def test_config_group_schema_serialize(
         self,
-        hass: HomeAssistant,
-        knx: KNXTestKit,
         test_name: str,
         ui_options: ConfigGroupSchema.UIOptions | None,
         expected_ui_options: dict[str, Any],
@@ -678,4 +808,417 @@ class TestConfigGroupSchema:
         )
         assert result.get("ui_options") == expected_ui_options, (
             f"Test case '{test_name}' failed: expected ui_options {expected_ui_options}, got {result.get('ui_options')}."
+        )
+
+    def test_get_schema(self) -> None:
+        """Test the schema property of ConfigGroupSchema."""
+        instance = ConfigGroupSchema(self.SAMPLE_SCHEMA)
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
+        )
+        assert schema == self.SAMPLE_SCHEMA, (
+            "The 'schema' property should return the schema passed to the constructor."
+        )
+
+
+class TestEntityConfigGroupSchema:
+    """Test class for EntityConfigGroupSchema validation and serialization."""
+
+    # Test data for the __call__ method:
+    # (1) test_name: descriptive name for the test
+    # (2) input_value: the data to validate (a dict to be validated by the schema)
+    # (3) expected: the expected result – either the validated dict or vol.Invalid if validation should fail
+    ENTITY_CONFIG_CALL_CASES: tuple[tuple[str, dict[str, Any], Any], ...] = (
+        (
+            "valid_minimal",
+            {CONF_NAME: "My Entity"},
+            {
+                CONF_NAME: "My Entity",
+                CONF_ENTITY_CATEGORY: None,
+                CONF_DEVICE_INFO: None,
+            },
+        ),
+        (
+            "valid_full",
+            {
+                CONF_NAME: "My Entity",
+                CONF_ENTITY_CATEGORY: EntityCategory.CONFIG,
+                CONF_DEVICE_INFO: "knx_vdev_01JK5K7GSS6R7S6Q7P5K7M7SMF",
+            },
+            {
+                CONF_NAME: "My Entity",
+                CONF_ENTITY_CATEGORY: EntityCategory.CONFIG,
+                CONF_DEVICE_INFO: "knx_vdev_01JK5K7GSS6R7S6Q7P5K7M7SMF",
+            },
+        ),
+        (
+            "invalid_missing_name",
+            {CONF_ENTITY_CATEGORY: EntityCategory.CONFIG},
+            vol.Invalid,
+        ),
+        (
+            "invalid_wrong_category",
+            {
+                CONF_NAME: "My Entity",
+                CONF_ENTITY_CATEGORY: "invalid",  # not a valid EntityCategory
+                CONF_DEVICE_INFO: "knx_vdev_01JK5K7GSS6R7S6Q7P5K7M7SMF",
+            },
+            vol.Invalid,
+        ),
+        (
+            "invalid_device_info_type",
+            {CONF_NAME: "My Entity", CONF_DEVICE_INFO: 123},
+            vol.Invalid,
+        ),
+    )
+
+    # Test data for the serialize method:
+    # (1) test_name: descriptive name for the test
+    # (2) allowed_categories: the allowed EntityCategory values to initialize the schema
+    # (3) expected_ui_options: the expected ui_options in the serialized output (a dict)
+    ENTITY_CONFIG_SERIALIZE_CASES: tuple[
+        tuple[str, tuple[EntityCategory, ...], dict[str, Any]], ...
+    ] = (
+        (
+            "serialize_default",
+            (EntityCategory.CONFIG, EntityCategory.DIAGNOSTIC),
+            {"collapsible": False},
+        ),
+    )
+
+    @pytest.mark.parametrize(
+        ("test_name", "input_value", "expected"),
+        ENTITY_CONFIG_CALL_CASES,
+        ids=[case[0] for case in ENTITY_CONFIG_CALL_CASES],
+    )
+    def test_entity_config_group_schema_call(
+        self,
+        test_name: str,
+        input_value: dict[str, Any],
+        expected: Any,
+    ) -> None:
+        """Test the __call__ method of EntityConfigGroupSchema.
+
+        It validates input data against the constructed schema.
+        If 'expected' is vol.Invalid, a vol.Invalid exception should be raised.
+        Otherwise, the validated output should match 'expected'.
+        """
+        instance = EntityConfigGroupSchema(
+            allowed_categories=(EntityCategory.CONFIG, EntityCategory.DIAGNOSTIC)
+        )
+        if expected == vol.Invalid:
+            with pytest.raises(vol.Invalid):
+                instance(input_value)
+        else:
+            result = instance(input_value)
+            assert result == expected, (
+                f"Test case '{test_name}' failed: Expected {expected}, got {result}."
+            )
+
+    @pytest.mark.parametrize(
+        ("test_name", "allowed_categories", "expected_ui_options"),
+        ENTITY_CONFIG_SERIALIZE_CASES,
+        ids=[case[0] for case in ENTITY_CONFIG_SERIALIZE_CASES],
+    )
+    def test_entity_config_group_schema_serialize(
+        self,
+        test_name: str,
+        allowed_categories: tuple[EntityCategory, ...],
+        expected_ui_options: dict[str, Any],
+    ) -> None:
+        """Test the serialize method of EntityConfigGroupSchema.
+
+        The serialization should return a dictionary with:
+          - "type": "config_group"
+          - "ui_options": containing "collapsible" from the UI options (defaulting to False)
+          - "properties": the converted schema from a mock converter.
+        """
+
+        def mock_convert(schema: Any) -> Any:
+            return "converted_schema"
+
+        instance = EntityConfigGroupSchema(allowed_categories=allowed_categories)
+        result = EntityConfigGroupSchema.serialize(instance, mock_convert)
+
+        assert isinstance(result, dict), (
+            f"Test case '{test_name}' failed: result is not a dict."
+        )
+        assert result.get("type") == "config_group", (
+            f"Test case '{test_name}' failed: type is not 'config_group'."
+        )
+        assert result.get("ui_options") == expected_ui_options, (
+            f"Test case '{test_name}' failed: expected ui_options {expected_ui_options}, got {result.get('ui_options')}."
+        )
+        assert result.get("properties") == "converted_schema", (
+            f"Test case '{test_name}' failed: properties mismatch."
+        )
+
+    def test_get_schema(self) -> None:
+        """Test get_schema function."""
+
+        instance = EntityConfigGroupSchema(allowed_categories=(EntityCategory.CONFIG,))
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
+        )
+
+
+class TestPlatformConfigSchema:
+    """Test class for PlatformConfigSchema validation and serialization."""
+
+    # A sample configuration schema for testing.
+    SAMPLE_CONFIG_SCHEMA = vol.Schema({"key": str})
+
+    # Test data for the __call__ method:
+    # (1) test_name: descriptive name for the test
+    # (2) input_value: the data to validate (a dict with "platform" and "config" keys)
+    # (3) expected: the expected result – either the validated dict or vol.Invalid if validation should fail.
+    PLATFORM_CONFIG_CALL_CASES: tuple[tuple[str, dict[str, Any], Any], ...] = (
+        (
+            "valid_platform_config",
+            {"platform": "test_platform", "config": {"key": "hello"}},
+            {"platform": "test_platform", "config": {"key": "hello"}},
+        ),
+        (
+            "invalid_platform",
+            {"platform": "wrong_platform", "config": {"key": "hello"}},
+            vol.Invalid,
+        ),
+        (
+            "invalid_config",
+            {"platform": "test_platform", "config": {"key": 123}},
+            vol.Invalid,
+        ),
+        (
+            "missing_config",
+            {"platform": "test_platform"},
+            vol.Invalid,
+        ),
+    )
+
+    @pytest.mark.parametrize(
+        ("test_name", "input_value", "expected"),
+        PLATFORM_CONFIG_CALL_CASES,
+        ids=[case[0] for case in PLATFORM_CONFIG_CALL_CASES],
+    )
+    def test_platform_config_schema_call(
+        self,
+        test_name: str,
+        input_value: dict[str, Any],
+        expected: Any,
+    ) -> None:
+        """Test the __call__ method of PlatformConfigSchema.
+
+        It validates input data against a schema constructed with a fixed platform ("test_platform")
+        and a configuration schema (SAMPLE_CONFIG_SCHEMA). If 'expected' is vol.Invalid,
+        a vol.Invalid exception should be raised. Otherwise, the validated output should match 'expected'.
+        """
+        instance = PlatformConfigSchema("test_platform", self.SAMPLE_CONFIG_SCHEMA)
+        if expected == vol.Invalid:
+            with pytest.raises(vol.Invalid):
+                instance(input_value)
+        else:
+            result = instance(input_value)
+            assert result == expected, (
+                f"Test case '{test_name}' failed: Expected {expected}, got {result}."
+            )
+
+    def test_platform_config_schema_serialize(
+        self,
+    ) -> None:
+        """Test the serialize method of PlatformConfigSchema.
+
+        The serialization should return a dictionary with:
+          - "type": "platform_config"
+          - "properties": the output from the provided converter.
+        """
+
+        def mock_convert(schema: Any) -> Any:
+            return "converted_schema"
+
+        instance = PlatformConfigSchema("test_platform", self.SAMPLE_CONFIG_SCHEMA)
+        result = PlatformConfigSchema.serialize(instance, mock_convert)
+        assert isinstance(result, dict), "Test case failed: result is not a dict."
+        assert result.get("type") == "platform_config", (
+            "Test case failed: 'type' is not 'platform_config'."
+        )
+        assert result.get("properties") == "converted_schema", (
+            f"Test case failed: Expected properties 'converted_schema', got '{result.get('properties')}'."
+        )
+
+    def test_get_schema(self) -> None:
+        """Test get_schema function."""
+
+        instance = PlatformConfigSchema(
+            platform="test_platform", config_schema=self.SAMPLE_CONFIG_SCHEMA
+        )
+        schema = instance.get_schema()
+        assert isinstance(schema, vol.Schema | vol.All | vol.Any), (
+            "get_schema should return a schema type."
+        )
+
+
+class TestSchemaSerializer:
+    """Test class for SchemaSerializer conversion and serialization logic."""
+
+    class UnsupportedClass:
+        """Placeholder class for testing unsupported types."""
+
+    # Test data for `_serializer`
+    # (1) test_name: descriptive name
+    # (2) input_value: an instance or value
+    # (3) expected: dict if supported, else UNSUPPORTED
+    SERIALIZER_CASES: tuple[tuple[str, Any, Any], ...] = (
+        (
+            "supported_fake_schema",
+            ConfigGroupSchema(vol.Schema({"key": str})),
+            {
+                "type": "config_group",
+                "properties": [{"name": "key", "type": "string"}],
+                "ui_options": {"collapsible": False},
+            },
+        ),
+        ("unsupported_int", 999, UNSUPPORTED),
+        ("unsupported_string", "Not recognized", UNSUPPORTED),
+        ("unsupported_class", UnsupportedClass(), UNSUPPORTED),
+        (
+            "simple_dict_keys",
+            {"alpha": "test_value", "beta": 123},
+            [
+                {"name": "alpha", "type": "constant", "value": "test_value"},
+                {"name": "beta", "type": "constant", "value": 123},
+            ],
+        ),
+        (
+            "required_and_optional",
+            {
+                vol.Required("req_key", default="default_req"): "REQ_VAL",
+                vol.Optional("opt_key", default="default_opt"): "OPT_VAL",
+            },
+            [
+                {
+                    "default": "default_req",
+                    "name": "req_key",
+                    "required": True,
+                    "type": "constant",
+                    "value": "REQ_VAL",
+                },
+                {
+                    "default": "default_opt",
+                    "name": "opt_key",
+                    "optional": True,
+                    "type": "constant",
+                    "value": "OPT_VAL",
+                },
+            ],
+        ),
+        (
+            "remove_marker_key",
+            {"keep_this": "keeping", vol.Remove("skip_this"): "skipped"},
+            [{"name": "keep_this", "type": "constant", "value": "keeping"}],
+        ),
+        (
+            "marker_with_description",
+            {vol.Required("key", description="A key"): "value"},
+            [
+                {
+                    "description": "A key",
+                    "name": "key",
+                    "required": True,
+                    "type": "constant",
+                    "value": "value",
+                }
+            ],
+        ),
+    )
+
+    # Test data for the `convert` method:
+    # (1) test_name
+    # (2) input_value
+    # (3) expected: dict/list if convertible, or an exception type if it fails
+    CONVERT_CASES: tuple[tuple[str, Any, Any], ...] = (
+        (
+            "convert_supported_type",
+            ConfigGroupSchema(vol.Schema({"key": str})),
+            {
+                "type": "config_group",
+                "ui_options": {"collapsible": False},
+                "properties": [{"name": "key", "type": "string"}],
+            },
+        ),
+        (
+            "convert_simple_dict",
+            {"k": "v"},
+            [{"name": "k", "type": "constant", "value": "v"}],
+        ),
+        (
+            "convert_unsupported_class",
+            UnsupportedClass,  # Unsupported type, can by anything
+            # UnsupportedClass(), # Should replace upper line when home-assistant-libs/voluptuous-serialize#140 is merged
+            ValueError,  # We'll assume a ValueError if it fails
+        ),
+    )
+
+    @pytest.mark.parametrize(
+        ("test_name", "input_value", "expected"),
+        SERIALIZER_CASES,
+        ids=[case[0] for case in SERIALIZER_CASES],
+    )
+    def test_serializer(
+        self,
+        test_name: str,
+        input_value: Any,
+        expected: Any,
+    ) -> None:
+        """Test _serializer with a single supported type or unsupported values.
+
+        - If it's a recognized type, we expect a dict from serialize().
+        - Otherwise, we get UNSUPPORTED.
+        """
+        result = SchemaSerializer._serializer(input_value)
+        assert result == expected, (
+            f"Test '{test_name}' failed: Expected {expected}, got {result}"
+        )
+
+    @pytest.mark.parametrize(
+        ("test_name", "input_value", "expected"),
+        CONVERT_CASES,
+        ids=[case[0] for case in CONVERT_CASES],
+    )
+    def test_convert_method(
+        self,
+        test_name: str,
+        input_value: Any,
+        expected: Any,
+    ) -> None:
+        """Test the SchemaSerializer.convert method."""
+
+        if isinstance(expected, type) and issubclass(expected, Exception):
+            with pytest.raises(expected):
+                SchemaSerializer.convert(input_value)
+        else:
+            result = SchemaSerializer.convert(input_value)
+            assert result == expected, (
+                f"Test '{test_name}' failed: Expected {expected}, got {result}"
+            )
+
+    def test_all_serializable_types_are_registered(self) -> None:
+        """Ensure all discovered SerializableSchema classes are registered in SchemaSerializer."""
+        discovered_classes = set()
+
+        for obj in gc.get_objects():
+            if isinstance(obj, type):
+                try:
+                    if (
+                        issubclass(obj, SerializableSchema)
+                        and obj is not SerializableSchema
+                        and "serialize" in obj.__dict__
+                    ):
+                        discovered_classes.add(obj)
+                except TypeError:
+                    continue
+
+        assert discovered_classes == set(SchemaSerializer._supported_types), (
+            "Mismatch between discovered SerializableSchema classes and SchemaSerializer._supported_types."
         )

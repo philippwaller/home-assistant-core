@@ -19,7 +19,7 @@ from typing import (
 )
 
 import voluptuous as vol
-from voluptuous_serialize import UNSUPPORTED, convert as volConvert
+from voluptuous_serialize import UNSUPPORTED, convert as vol_serializer_convert
 from xknx.devices.climate import FanSpeedMode, SetpointShiftMode
 from xknx.dpt import DPTBase, DPTNumeric
 from xknx.dpt.dpt_20 import HVACControllerMode, HVACOperationMode
@@ -1064,7 +1064,17 @@ class SerializableSchema(Protocol):
     """
 
     def get_schema(self) -> VolSchemaType:
-        """Return the Voluptuous schema definition for the class."""
+        """Retrieve the Voluptuous schema definition for the instance.
+
+        This method returns the schema definition required for validation. Unlike a
+        static method or property, `get_schema` is an instance method because the
+        schema may depend on runtime parameters or dynamic calculations that are
+        only available after initialization.
+
+        Returns:
+            VolSchemaType: The Voluptuous schema definition associated with the instance.
+
+        """
 
     @classmethod
     def serialize(cls, value: Self, convert: Callable[[Any], Any]) -> dict[str, Any]:
@@ -1093,6 +1103,57 @@ class SerializableSchema(Protocol):
             or does not meet the required constraints.
 
         """
+
+
+class DptUtils:
+    """Utility class for working with KNX Datapoint Types (DPTs)."""
+
+    @staticmethod
+    def format_dpt(dpt: type[DPTBase]) -> str:
+        """Generate a string representation of a DPT class.
+
+        Args:
+            dpt: A DPT class type.
+
+        Returns:
+            A formatted string representation of the DPT class, including both main
+            and sub numbers (e.g., '1.002'). If the sub number is None, only the
+            main number is included (e.g., '14').
+
+        Raises:
+            ValueError: If an invalid DPT class is provided
+
+        """
+        if not issubclass(dpt, DPTBase) or not dpt.has_distinct_dpt_numbers():
+            raise ValueError("Invalid DPT class provided.")
+
+        return (
+            f"{dpt.dpt_main_number}.{dpt.dpt_sub_number:03}"
+            if dpt.dpt_sub_number is not None
+            else f"{dpt.dpt_main_number}"
+        )
+
+    @staticmethod
+    @cache
+    def derive_subtypes(*types: type[DPTBase]) -> tuple[type[DPTBase], ...]:
+        """Extract all distinct DPT types derived from the given DPT classes.
+
+        This function takes one or more DPT classes as input and recursively
+        gathers all types that are derived from these classes.
+
+        Args:
+            types: One or more DPT classes to process.
+
+        Returns:
+            A tuple of all distinct DPTs found in the class tree of the provided classes.
+
+        """
+        return tuple(
+            dpt
+            for dpt_class in types
+            for dpt in dpt_class.dpt_class_tree()
+            if dpt.has_distinct_dpt_numbers()
+        )
 
 
 class ConfigGroupSchema(SerializableSchema):
@@ -1253,57 +1314,6 @@ class SyncStateSchema(SerializableSchema):
     ) -> dict[str, Any]:
         """Convert SyncState schema into a dictionary representation."""
         return {"type": "sync_state"}
-
-
-class DptUtils:
-    """Utility class for working with KNX Datapoint Types (DPTs)."""
-
-    @staticmethod
-    def format_dpt(dpt: type[DPTBase]) -> str:
-        """Generate a string representation of a DPT class.
-
-        Args:
-            dpt: A DPT class type.
-
-        Returns:
-            A formatted string representation of the DPT class, including both main
-            and sub numbers (e.g., '1.002'). If the sub number is None, only the
-            main number is included (e.g., '14').
-
-        Raises:
-            ValueError: If an invalid DPT class is provided
-
-        """
-        if not issubclass(dpt, DPTBase) or not dpt.has_distinct_dpt_numbers():
-            raise ValueError("Invalid DPT class provided.")
-
-        return (
-            f"{dpt.dpt_main_number}.{dpt.dpt_sub_number:03}"
-            if dpt.dpt_sub_number is not None
-            else f"{dpt.dpt_main_number}"
-        )
-
-    @staticmethod
-    @cache
-    def derive_subtypes(*types: type[DPTBase]) -> tuple[type[DPTBase], ...]:
-        """Extract all distinct DPT types derived from the given DPT classes.
-
-        This function takes one or more DPT classes as input and recursively
-        gathers all types that are derived from these classes.
-
-        Args:
-            types: One or more DPT classes to process.
-
-        Returns:
-            A tuple of all distinct DPTs found in the class tree of the provided classes.
-
-        """
-        return tuple(
-            dpt
-            for dpt_class in types
-            for dpt in dpt_class.dpt_class_tree()
-            if dpt.has_distinct_dpt_numbers()
-        )
 
 
 @dataclass
@@ -1510,7 +1520,7 @@ class SchemaSerializer:
             TypeError: If the input schema is not a valid Voluptuous schema.
 
         """
-        return volConvert(schema, custom_serializer=cls._serializer)
+        return vol_serializer_convert(schema, custom_serializer=cls._serializer)
 
     @classmethod
     def _serializer(cls, value: Any) -> Any | object:
@@ -1539,7 +1549,11 @@ class SchemaSerializer:
                 # Call the appropriate serialize method
                 return supported_type.serialize(value, cls.convert)
 
-        # If `value` is a Mapping (e.g., a dictionary), handle its items
+        # If `value` is a mapping (e.g., a dictionary), process its items.
+        # This code overrides the default behavior of voluptuous-serialize
+        # in order to handle the `vol.Remove` marker. The long-term goal is
+        # to contribute this feature upstream so it can eventually be removed
+        # from our local code.
         if isinstance(value, Mapping):
             serialized_items = []
 
@@ -1578,5 +1592,5 @@ class SchemaSerializer:
 
             return serialized_items
 
-        # If no supported type or Mapping is found, return UNSUPPORTED
+        # If no supported type found, return UNSUPPORTED
         return UNSUPPORTED
