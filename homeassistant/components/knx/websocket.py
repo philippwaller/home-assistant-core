@@ -61,7 +61,7 @@ async def register_panel(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_entity_entries)
     websocket_api.async_register_command(hass, ws_create_device)
     websocket_api.async_register_command(hass, ws_get_entity_schemas)
-    websocket_api.async_register_command(hass, ws_create_entity2)
+    websocket_api.async_register_command(hass, ws_create_platform_entity)
 
     if DOMAIN not in hass.data.get("frontend_panels", {}):
         await hass.http.async_register_static_paths(
@@ -154,6 +154,19 @@ def provide_knx(
             func(hass, knx, connection, msg)
 
     return with_knx
+
+
+def vol_invalid_response(exc: vol.Invalid) -> dict[str, Any]:
+    """Format a Voluptuous validation exception into a structured error response."""
+    errors: list[dict[str, Any]] = [
+        {"path": [str(p) for p in error.path], "error": error.error_message}
+        for error in (exc.errors if isinstance(exc, vol.MultipleInvalid) else [exc])
+    ]
+
+    return {
+        "success": False,
+        "errors": errors,
+    }
 
 
 @websocket_api.require_admin
@@ -599,13 +612,13 @@ def ws_get_entity_schemas(
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "knx/create_entity2",
+        vol.Required("type"): "knx/create_platform_entity",
         vol.Required(CONF_DATA): dict,
     }
 )
 @websocket_api.async_response
 @provide_knx
-async def ws_create_entity2(
+async def ws_create_platform_entity(
     hass: HomeAssistant,
     knx: KNXModule,
     connection: websocket_api.ActiveConnection,
@@ -656,15 +669,9 @@ async def ws_create_entity2(
     # Validate and construct config.
     try:
         config = config_class.from_dict(data)
+
     except vol.Invalid as exc:
-        connection.send_result(
-            message_id,
-            {
-                "success": False,
-                "error": exc.error_message,
-                "path": exc.path,
-            },
-        )
+        connection.send_result(message_id, vol_invalid_response(exc))
         return
 
     # Ensure the config is persistable, then create the entity.
