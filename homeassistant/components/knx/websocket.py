@@ -22,7 +22,7 @@ from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.util.ulid import ulid_now
 
 from .const import DOMAIN, KNX_MODULE_KEY
-from .entity import BasePlatformConfiguration, StorageSerialization
+from .entity import EntityConfiguration, Persistable
 from .schema import SchemaSerializer
 from .sensor import UiSensorConfig
 from .storage.config_store import ConfigStoreException
@@ -587,7 +587,7 @@ def ws_get_entity_schemas(
 
     """
 
-    supportedConfigs: tuple[type[BasePlatformConfiguration], ...] = (UiSensorConfig,)
+    supportedConfigs: tuple[type[EntityConfiguration], ...] = (UiSensorConfig,)
 
     payload = tuple(
         SchemaSerializer.convert(config.get_schema()) for config in supportedConfigs
@@ -611,56 +611,85 @@ async def ws_create_entity2(
     connection: websocket_api.ActiveConnection,
     msg: dict,
 ) -> None:
-    """Create entity in entity store and load it.
+    """Create an entity from the given configuration data via WebSocket.
 
-    This function supports creating entities for multiple platform types,
-    based on the provided configuration classes. The platform is validated
-    dynamically by matching the `CONF_PLATFORM` field with supported classes.
+    This function retrieves the configuration data from the incoming message,
+    identifies the appropriate configuration class based on the platform, and
+    attempts to create the corresponding entity in the KNX config store. If
+    successful, a success response containing the new entity's ID is sent back
+    to the client; otherwise, an error response is returned.
+
+    Args:
+        hass: The Home Assistant instance.
+        knx: An instance of the KNXModule, which provides access to the KNX config store.
+        connection: The active WebSocket connection used for sending responses.
+        msg: A dictionary containing the incoming WebSocket message data.
+
+    Returns:
+        None. Responses are sent back to the WebSocket client via `connection.send_result`
+        or `connection.send_error`.
+
+    Raises:
+        TypeError: If the resolved configuration object is not an instance of ``Persistable``.
+
     """
+    # Collect frequently accessed fields.
+    message_id: int = msg["id"]
+    data: dict[str, Any] = msg[CONF_DATA]
 
-    # Define supported config classes
-    supported_config_classes: dict[str, type[BasePlatformConfiguration]] = {
+    # Define supported config classes.
+    supported_config_classes: dict[str, type[EntityConfiguration]] = {
         str(Platform.SENSOR): UiSensorConfig,
     }
 
-    platform = msg[CONF_DATA][CONF_PLATFORM]
+    platform = data.get(CONF_PLATFORM, "")
     config_class = supported_config_classes.get(platform)
 
     if not config_class:
         connection.send_error(
-            msg["id"],
+            message_id,
             websocket_api.const.ERR_NOT_SUPPORTED,
             f"Unsupported platform: {platform}",
         )
         return
 
-    if not issubclass(config_class, StorageSerialization):
-        raise TypeError(
-            f"Config class {config_class} must be a subclass of StorageSerialization"
-        )
-
+    # Validate and construct config.
     try:
-        config = config_class.from_dict(msg[CONF_DATA])
+        config = config_class.from_dict(data)
     except vol.Invalid as exc:
         connection.send_result(
-            msg["id"], {"success": False, "error": exc.error_message, "path": exc.path}
+            message_id,
+            {
+                "success": False,
+                "error": exc.error_message,
+                "path": exc.path,
+            },
+        )
+        return
+
+    # Ensure the config is persistable, then create the entity.
+    if not isinstance(config, Persistable):
+        connection.send_error(
+            message_id,
+            websocket_api.const.ERR_INVALID_FORMAT,
+            f"Config class {config_class} must implement Persistable",
         )
         return
 
     try:
-        # Create entity in the config store
-
         entity_id = await knx.config_store.create_entity(
-            platform,
-            config.to_storage_dict(),
+            platform, config.to_storage_dict()
         )
     except ConfigStoreException as err:
         connection.send_error(
-            msg["id"], websocket_api.const.ERR_HOME_ASSISTANT_ERROR, str(err)
+            message_id,
+            websocket_api.const.ERR_HOME_ASSISTANT_ERROR,
+            str(err),
         )
         return
 
-    # Send success result
+    # Send success response with the new entity ID.
     connection.send_result(
-        msg["id"], EntityStoreValidationSuccess(success=True, entity_id=entity_id)
+        message_id,
+        EntityStoreValidationSuccess(success=True, entity_id=entity_id),
     )

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, is_dataclass
-from typing import TYPE_CHECKING, Any, Self, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 from xknx.devices import Device as XknxDevice
 
@@ -117,74 +117,41 @@ class KnxUiEntity(_KnxEntityBase):
             self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, device_info)})
 
 
-class StorageSerialization(ABC):
-    """Adds storage-based serialization/deserialization to a dataclass.
-
-    This class provides two methods for converting between a dataclass
-    instance and a dictionary suitable for persistence in storage.
-    The target class must be a dataclass.
-    """
-
-    @classmethod
-    @abstractmethod
-    def from_storage_dict(cls, data: dict[str, Any]) -> Self:
-        """Instantiate the class from a storage-compatible dictionary.
-
-        This method filters out any keys not matching the dataclass fields
-        and then uses the remaining data to initialize an instance.
-
-        Args:
-            data (dict[str, Any]): A dictionary representing the object
-                in storage format.
-
-        Returns:
-            InstanceType: A newly instantiated object of this class.
-
-        """
-
-    def to_storage_dict(self) -> dict[str, Any]:
-        """Convert the current instance into a dictionary suitable for storage.
-
-        Uses `asdict` to serialize all dataclass fields into a standard dictionary.
-
-        Returns:
-            dict[str, Any]: A dictionary representation of this instance
-            suitable for storing in databases, files, etc.
-
-        """
-        if is_dataclass(self):
-            return cast(dict[str, Any], asdict(self))  # type: ignore[unreachable]
-        raise TypeError(f"{self} is not a dataclass.")
-
-
 @dataclass
-class BasePlatformConfiguration(ABC):
-    """Abstract base class for platform configuration.
+class EntityConfiguration(ABC):
+    """Base class for all entity configuration classes.
 
-    This class defines the minimal interface for handling platform-specific configurations,
-    including schema validation and deserialization. It provides a framework for converting
-    data into a schema-compliant format and validating configurations against a predefined schema.
+    This abstract class acts as a bridge between different input formats (e.g., YAML
+    or UI-based configurations) and the actual Home Assistant platform entities. Its
+    purpose is to consolidate all the attributes required to create and manage these
+    entities in a single, coherent configuration object.
 
-    The `to_dict` method, which performs reverse serialization (i.e., converting an instance
-    back into a dictionary), is not marked as abstract because reverse serialization may not
-    be required for all use cases. If reverse serialization is needed, subclasses must
-    override and implement the `to_dict` method to ensure schema compliance.
+    By defining a strict interface for schema validation and data handling, subclasses
+    can remain independent of how the underlying data is provided. This ensures that
+    changes to input sources (for example, changes of the UI data schema) do not
+    break existing implementations. In turn, new platform entities can be created
+    consistently, since the internal structure for each entity type are
+    encapsulated within the configuration class itself.
 
-    Subclasses are required to:
-    - Provide a schema definition through `get_schema()`.
-    - Implement the `from_dict` method for creating instances from schema-compliant dictionaries.
+    Required Methods:
+        1. ``get_platform()``: Returns a platform identifier string.
+        2. ``get_schema()``: Provides a Voluptuous-compatible schema object for
+           validating the structure and types of incoming data.
+        3. ``from_dict(data)``: Constructs an instance from a dictionary
 
     Optional:
-    - Override `to_dict` if reverse serialization is required for the specific use case.
+        - ``to_dict()``: If reverse serialization is needed, subclasses should override
+          this method to produce a schema-compliant dictionary representation of the
+          current configuration state.
     """
 
     @classmethod
     @abstractmethod
     def get_platform(cls) -> str:
-        """Retrieve the platform identifier.
+        """Return a unique identifier for the platform.
 
-        Subclasses must provide a string representing the platform to which the
-        configuration applies.
+        Subclasses must implement this method to provide a string that identifies
+        the platform  the configuration belongs to.
 
         Returns:
             str: The platform identifier.
@@ -194,42 +161,95 @@ class BasePlatformConfiguration(ABC):
     @classmethod
     @abstractmethod
     def get_schema(cls) -> PlatformConfigSchema:
-        """Retrieve a schema definition used for validation.
+        """Retrieve a validation schema for this configuration.
 
-        Subclasses must provide a Voluptuous complatible schema object that defines
-        the structure and validation rules for the configuration.
+        Subclasses must implement this method to return a Voluptuous-compatible schema
+        that defines the rules, structure, and types for validating the configuration data.
 
         Returns:
-            PlatformConfigSchema: The schema object for validation.
+            PlatformConfigSchema: The schema object for validating input data.
 
         """
 
     @classmethod
     @abstractmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
-        """Create an instance from a schema-compliant dictionary.
+        """Create an instance from a dictionary of validated data.
 
-        This method is mandatory for all subclasses and should validate the input
-        against the schema returned by `get_schema()`.
+        Subclasses must implement this method to parse the provided dictionary
+        (already validated against the class schema) and return a new instance of
+        the configuration class.
 
         Args:
-            data (dict[str, Any]): A dictionary adhering to the schema.
+            data (dict[str, Any]): A dictionary of configuration values that comply
+                with the schema returned by ``get_schema()``.
 
         Returns:
-            Self: An instance of the subclass.
+            Self: An initialized instance of the subclass.
 
         """
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert the instance into a dictionary conforming to the schema.
+        """Convert the current instance into a schema-compliant dictionary.
 
-        This method performs reverse serialization, converting the instance into
-        a schema-compliant dictionary. While not abstract, subclasses must override
-        this method if reverse serialization is necessary for their use case.
+        While not abstract, subclasses should override this method if reverse
+        serialization is required for their particular use case. When implemented,
+        the resulting dictionary must align with the schema defined in
+        ``get_schema()``.
 
         Returns:
-            dict[str, Any]: A dictionary representation of the instance, aligned
-            with the schema.
+            dict[str, Any]: A dictionary representation of the configuration,
+            conforming to the class schema.
 
         """
         return {}
+
+
+@runtime_checkable
+class Persistable(Protocol):
+    """Provides an interface for persisting configuration data in a config store.
+
+    This protocol can be used to extend ``EntityConfiguration classes``, ensuring they
+    can be persisted in the integration's internal config store by implementing
+    consistent and schema-agnostic storage routines.
+
+    The methods ``from_storage_dict`` and ``to_storage_dict`` ensure that data is stored
+    and retrieved in a uniform and schema-independent format.
+
+    Implementing classes must ensure that:
+
+    1. ``from_storage_dict`` correctly reconstructs an instance from a dictionary.
+    2. ``to_storage_dict`` provides a dictionary representation suitable for storage.
+    3. The stored representation remains stable across versions to prevent breaking changes.
+    """
+
+    @classmethod
+    def from_storage_dict(cls, data: dict[str, Any]) -> Self:
+        """Create a new instance from a dictionary retrieved from storage.
+
+        This method reconstructs an instance using the provided dictionary.
+        Implementations must ensure that all required fields are correctly
+        extracted and converted to the appropriate data types.
+
+        Args:
+            data (dict[str, Any]): A dictionary containing serialized configuration data.
+
+        Returns:
+            Self: An instance of the implementing class, populated with data from storage.
+
+        """
+
+    def to_storage_dict(self) -> dict[str, Any]:
+        """Convert the current instance into a dictionary suitable for storage.
+
+        This method serializes the instance into a format that can be stored persistently.
+        Implementations must ensure that:
+
+        - All necessary data is included.
+        - The output format is stable across versions.
+        - Data format remain consistent with ``from_storage_dict``.
+
+        Returns:
+            dict[str, Any]: A dictionary representation of the instance for persistent storage.
+
+        """

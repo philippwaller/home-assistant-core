@@ -41,11 +41,11 @@ from homeassistant.util.enum import try_parse_enum
 
 from .const import ATTR_SOURCE, CONF_SYNC_STATE, KNX_MODULE_KEY
 from .entity import (
-    BasePlatformConfiguration,
+    EntityConfiguration,
     KnxUiEntity,
     KnxUiEntityPlatformController,
     KnxYamlEntity,
-    StorageSerialization,
+    Persistable,
 )
 from .knx_module import KNXModule
 from .models import GroupAddressConfig
@@ -266,7 +266,7 @@ class KNXSystemSensor(SensorEntity):
 
 
 @dataclass
-class SensorConfig(BasePlatformConfiguration, ABC):
+class SensorConfig(EntityConfiguration, ABC):
     """Base configuration data class for a sensor entity.
 
     Provides core sensor-related fields. Subclasses must implement
@@ -290,7 +290,7 @@ class SensorConfig(BasePlatformConfiguration, ABC):
 
 
 @dataclass
-class UiSensorConfig(SensorConfig, StorageSerialization):
+class UiSensorConfig(SensorConfig, Persistable):
     """UI-oriented sensor configuration with storage serialization.
 
     Extends `BaseSensorConfig` to define how the sensor configuration
