@@ -3,36 +3,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, Self, runtime_checkable
 
 from .storage.const import CONF_DPT, CONF_GA_PASSIVE, CONF_GA_STATE, CONF_GA_WRITE
 
-InstanceType_co = TypeVar("InstanceType_co", bound="Serializable", covariant=True)
-
 
 @runtime_checkable
-class Serializable(Protocol[InstanceType_co]):
-    """A protocol that requires a class to implement methods for serialization and deserialization.
+class Serializable(Protocol):
+    """A protocol that defines the interface for serializable classes.
 
-    Classes implementing this protocol must provide:
-    - A class method `from_dict` to create an instance from a dictionary.
-    - An instance method `to_dict` to serialize an object into a dictionary.
+    Classes that implement this protocol can be serialized to and from dictionaries.
     """
 
     @classmethod
-    def from_dict(cls: type[InstanceType_co], data: dict[str, Any]) -> InstanceType_co:
-        """Create an instance of the class from a dictionary.
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        """Construct an instance of the class from a dictionary.
 
         Args:
-            data (dict[str, Any]): The dictionary containing the serialized data.
+            data (dict[str, Any]): A dictionary containing the data to construct the instance.
 
         Returns:
-            T: An instance of the class.
+            Self: An instance of the class.
 
         """
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the current instance into a dictionary.
+        """Serialize the instance to a dictionary.
 
         Returns:
             dict[str, Any]: A dictionary representation of the instance.
@@ -41,35 +37,7 @@ class Serializable(Protocol[InstanceType_co]):
 
 
 @dataclass
-class ConfigGroup(Serializable["ConfigGroup"]):
-    """Data class representing a configuration group."""
-
-    properties: dict[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the instance into a dictionary."""
-        return {
-            prop: self.properties[prop].to_dict()
-            if isinstance(self.properties[prop], Serializable)
-            else self.properties[prop]
-            for prop in self.properties
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ConfigGroup:
-        """Create an instance from a dictionary."""
-        return cls(
-            properties={
-                prop: GroupAddressConfig.from_dict(data[prop])
-                if isinstance(data[prop], dict)
-                else data[prop]
-                for prop in data
-            }
-        )
-
-
-@dataclass
-class GroupAddressConfig(Serializable["GroupAddressConfig"]):
+class GroupAddressConfig(Serializable):
     """Data class representing a KNX group address configuration."""
 
     write_ga: str | int | None
@@ -94,27 +62,4 @@ class GroupAddressConfig(Serializable["GroupAddressConfig"]):
             state_ga=data.get(CONF_GA_STATE),
             passive_ga=data.get(CONF_GA_PASSIVE),
             dpt=data.get(CONF_DPT),
-        )
-
-
-@dataclass
-class PlatformConfig(Serializable["PlatformConfig"]):
-    """Data class representing a platform configuration."""
-
-    platform: str
-    config: ConfigGroup
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the instance into a dictionary."""
-        return {
-            "platform": self.platform,
-            "config": self.config,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> PlatformConfig:
-        """Create an instance from a dictionary."""
-        return cls(
-            platform=data["platform"],
-            config=data["config"],
         )
