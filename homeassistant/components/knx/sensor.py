@@ -49,13 +49,13 @@ from .entity import (
 )
 from .knx_module import KNXModule
 from .models import GroupAddressConfig
-from .schema import (
+from .schema import SensorSchema
+from .schema_ui import (
     ConfigGroupSchema,
     DptUtils,
     EntityConfigGroupSchema,
     GroupAddressConfigSchema,
     PlatformConfigSchema,
-    SensorSchema,
     SyncStateSchema,
 )
 from .storage.const import CONF_ALWAYS_CALLBACK, CONF_DEVICE_INFO, CONF_GA_SENSOR

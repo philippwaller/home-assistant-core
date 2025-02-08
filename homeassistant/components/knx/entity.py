@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import EntityPlatform
 from homeassistant.helpers.entity_registry import RegistryEntry
 
 from .const import DOMAIN
-from .schema import PlatformConfigSchema
+from .schema_ui import PlatformConfigSchema
 from .storage.config_store import PlatformControllerBase
 from .storage.const import CONF_DEVICE_INFO
 

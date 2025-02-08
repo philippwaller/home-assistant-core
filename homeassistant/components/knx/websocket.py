@@ -23,7 +23,7 @@ from homeassistant.util.ulid import ulid_now
 
 from .const import DOMAIN, KNX_MODULE_KEY
 from .entity import EntityConfiguration, Persistable
-from .schema import SchemaSerializer
+from .schema_ui import SchemaSerializer
 from .sensor import UiSensorConfig
 from .storage.config_store import ConfigStoreException
 from .storage.const import CONF_DATA

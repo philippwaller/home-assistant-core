@@ -19,7 +19,7 @@ from xknx.dpt import (
     DPTVoltage,
 )
 
-from homeassistant.components.knx.schema import (
+from homeassistant.components.knx.schema_ui import (
     ConfigGroupSchema,
     DptUtils,
     EntityConfigGroupSchema,
