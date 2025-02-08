@@ -386,6 +386,7 @@ class UiSensorConfig(SensorConfig, Persistable):
         category = config["entity_config"].get(CONF_ENTITY_CATEGORY)
         state_class = config["platform_config"].get(CONF_STATE_CLASS)
         device_class = config["platform_config"].get(CONF_DEVICE_CLASS)
+        advanced = config["platform_config"].get("advanced", {})
 
         # Construct the instance using validated data
         return cls(
@@ -394,11 +395,9 @@ class UiSensorConfig(SensorConfig, Persistable):
             ),
             state_class=SensorStateClass(state_class) if state_class else None,
             device_class=SensorDeviceClass(device_class) if device_class else None,
-            always_callback=config["platform_config"]
-            .get("advanced")
-            .get(CONF_ALWAYS_CALLBACK),
-            sync_state=config["platform_config"].get("advanced").get(CONF_SYNC_STATE),
-            name=config["entity_config"].get(CONF_NAME),
+            always_callback=advanced.get(CONF_ALWAYS_CALLBACK),
+            sync_state=advanced.get(CONF_SYNC_STATE),
+            name=config["entity_config"][CONF_NAME],
             device_info=config["entity_config"].get(CONF_DEVICE_INFO),
             entity_category=EntityCategory(category) if category else None,
         )
