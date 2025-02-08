@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from functools import wraps
+from functools import cache, wraps
 from typing import TYPE_CHECKING, Any, Final, overload
 
 import knx_frontend as knx_panel
@@ -609,11 +609,22 @@ def ws_get_entity_schemas(
     connection.send_result(msg["id"], payload)
 
 
+@cache
+def get_entity_config_class(platform: str) -> type[EntityConfiguration] | None:
+    """Map supported platform types to their configuration classes."""
+    supported_config_classes: dict[str, type[EntityConfiguration]] = {
+        str(Platform.SENSOR): UiSensorConfig,
+    }
+    return supported_config_classes.get(platform)
+
+
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "knx/create_platform_entity",
-        vol.Required(CONF_DATA): dict,
+        vol.Required(CONF_DATA): vol.Schema(
+            {CONF_PLATFORM: str}, extra=vol.ALLOW_EXTRA
+        ),
     }
 )
 @websocket_api.async_response
@@ -649,20 +660,13 @@ async def ws_create_platform_entity(
     # Collect frequently accessed fields.
     message_id: int = msg["id"]
     data: dict[str, Any] = msg[CONF_DATA]
+    platform: str = data[CONF_PLATFORM]
 
-    # Define supported config classes.
-    supported_config_classes: dict[str, type[EntityConfiguration]] = {
-        str(Platform.SENSOR): UiSensorConfig,
-    }
-
-    platform = data.get(CONF_PLATFORM, "")
-    config_class = supported_config_classes.get(platform)
-
-    if not config_class:
+    if not (config_class := get_entity_config_class(platform)):
         connection.send_error(
             message_id,
             websocket_api.const.ERR_NOT_SUPPORTED,
-            f"Unsupported platform: {platform}",
+            f"Unsupported platform: '{platform}'",
         )
         return
 
