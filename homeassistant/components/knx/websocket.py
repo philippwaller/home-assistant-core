@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from functools import cache, wraps
-from typing import TYPE_CHECKING, Any, Final, overload
+from typing import TYPE_CHECKING, Any, Final, cast, overload
 
 import knx_frontend as knx_panel
 import voluptuous as vol
@@ -61,7 +61,8 @@ async def register_panel(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_get_entity_entries)
     websocket_api.async_register_command(hass, ws_create_device)
     websocket_api.async_register_command(hass, ws_get_entity_schemas)
-    websocket_api.async_register_command(hass, ws_create_platform_entity)
+    websocket_api.async_register_command(hass, ws_create_entity_v2)
+    websocket_api.async_register_command(hass, ws_get_entity_config_v2)
 
     if DOMAIN not in hass.data.get("frontend_panels", {}):
         await hass.http.async_register_static_paths(
@@ -610,18 +611,33 @@ def ws_get_entity_schemas(
 
 
 @cache
-def get_entity_config_class(platform: str) -> type[EntityConfiguration] | None:
-    """Map supported platform types to their configuration classes."""
+def get_entity_config_cls(platform: str) -> type[EntityConfiguration]:
+    """Map supported platform types to their configuration classes.
+
+    Args:
+        platform (str): The platform type for which to retrieve the configuration class.
+
+    Returns:
+        type[EntityConfiguration]: The configuration class associated with the given platform.
+
+    Raises:
+        ValueError: If the provided platform is not supported.
+
+    """
     supported_config_classes: dict[str, type[EntityConfiguration]] = {
-        str(Platform.SENSOR): UiSensorConfig,
+        Platform.SENSOR: UiSensorConfig,
     }
-    return supported_config_classes.get(platform)
+
+    if platform not in supported_config_classes:
+        raise ValueError(f"Unsupported platform: '{platform}'")
+
+    return supported_config_classes[platform]
 
 
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "knx/create_platform_entity",
+        vol.Required("type"): "knx/create_entity_v2",
         vol.Required(CONF_DATA): vol.Schema(
             {CONF_PLATFORM: str}, extra=vol.ALLOW_EXTRA
         ),
@@ -629,7 +645,7 @@ def get_entity_config_class(platform: str) -> type[EntityConfiguration] | None:
 )
 @websocket_api.async_response
 @provide_knx
-async def ws_create_platform_entity(
+async def ws_create_entity_v2(
     hass: HomeAssistant,
     knx: KNXModule,
     connection: websocket_api.ActiveConnection,
@@ -653,44 +669,36 @@ async def ws_create_platform_entity(
         None. Responses are sent back to the WebSocket client via `connection.send_result`
         or `connection.send_error`.
 
-    Raises:
-        TypeError: If the resolved configuration object is not an instance of ``Persistable``.
-
     """
-    # Collect frequently accessed fields.
     message_id: int = msg["id"]
-    data: dict[str, Any] = msg[CONF_DATA]
-    platform: str = data[CONF_PLATFORM]
-
-    if not (config_class := get_entity_config_class(platform)):
-        connection.send_error(
-            message_id,
-            websocket_api.const.ERR_NOT_SUPPORTED,
-            f"Unsupported platform: '{platform}'",
-        )
-        return
-
-    # Validate and construct config.
-    try:
-        config = config_class.from_dict(data)
-
-    except vol.Invalid as exc:
-        connection.send_result(message_id, vol_invalid_response(exc))
-        return
-
-    # Ensure the config is persistable, then create the entity.
-    if not isinstance(config, Persistable):
-        connection.send_error(
-            message_id,
-            websocket_api.const.ERR_INVALID_FORMAT,
-            f"Config class {config_class} must implement Persistable",
-        )
-        return
+    platform: str = msg[CONF_DATA][CONF_PLATFORM]
 
     try:
+        config_class = get_entity_config_cls(platform)
+        config = config_class.from_dict(msg[CONF_DATA])
+        if not isinstance(config, Persistable):
+            raise TypeError(f"Config class {config_class} must implement Persistable")  # noqa: TRY301
+
         entity_id = await knx.config_store.create_entity(
             platform, config.to_storage_dict()
         )
+
+        # Send success response with the new entity ID.
+        connection.send_result(
+            message_id,
+            EntityStoreValidationSuccess(success=True, entity_id=entity_id),
+        )
+
+    except (ValueError, TypeError) as err:
+        connection.send_error(
+            message_id,
+            websocket_api.const.ERR_NOT_SUPPORTED,
+            str(err),
+        )
+        return
+    except vol.Invalid as err:
+        connection.send_result(message_id, vol_invalid_response(err))
+        return
     except ConfigStoreException as err:
         connection.send_error(
             message_id,
@@ -699,8 +707,41 @@ async def ws_create_platform_entity(
         )
         return
 
-    # Send success response with the new entity ID.
-    connection.send_result(
-        message_id,
-        EntityStoreValidationSuccess(success=True, entity_id=entity_id),
-    )
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "knx/get_entity_config_v2",
+        vol.Required(CONF_ENTITY_ID): str,
+    }
+)
+@provide_knx
+@callback
+def ws_get_entity_config_v2(
+    hass: HomeAssistant,
+    knx: KNXModule,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Get entity configuration from entity store."""
+    try:
+        config_entry = knx.config_store.get_entity_config(msg[CONF_ENTITY_ID])
+        platform = config_entry.get(CONF_PLATFORM, "")
+        config_cls = get_entity_config_cls(platform)
+
+        if not issubclass(config_cls, Persistable):
+            raise TypeError(f"Config class {config_cls} must implement Persistable")  # noqa: TRY301
+
+        data = config_entry[CONF_DATA]
+        config = cast(EntityConfiguration, config_cls.from_storage_dict(data))
+        connection.send_result(msg["id"], config.to_dict())
+    except ConfigStoreException as err:
+        connection.send_error(
+            msg["id"], websocket_api.const.ERR_HOME_ASSISTANT_ERROR, str(err)
+        )
+        return
+    except (ValueError, TypeError, Exception) as err:
+        connection.send_error(
+            msg["id"], websocket_api.const.ERR_NOT_SUPPORTED, str(err)
+        )
+        return
