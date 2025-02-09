@@ -14,9 +14,17 @@ from xknx.exceptions import CouldNotParseAddress
 from xknx.telegram import GroupAddress as XKnxGroupAddress
 from xknx.telegram.address import parse_device_group_address
 
-from homeassistant.const import CONF_ENTITY_CATEGORY, CONF_NAME, EntityCategory
+from homeassistant.const import (
+    CONF_DESCRIPTION,
+    CONF_ENTITY_CATEGORY,
+    CONF_NAME,
+    CONF_PLATFORM,
+    CONF_TYPE,
+    EntityCategory,
+)
 from homeassistant.helpers.typing import VolSchemaType
 
+from .const import CONF_CONFIG, CONF_ITEMS, CONF_PROPERTIES
 from .storage.const import (
     CONF_DEVICE_INFO,
     CONF_DPT,
@@ -168,11 +176,11 @@ class ConfigGroupSchema(SerializableSchema):
         """Convert Section schema into a dictionary representation."""
 
         return {
-            "type": "config_group",
+            CONF_TYPE: "config_group",
             "ui_options": {
                 "collapsible": value.ui_options["collapsible"],
             },
-            "properties": convert(value.schema),
+            CONF_PROPERTIES: convert(value.schema),
         }
 
 
@@ -213,7 +221,7 @@ class GroupAddressSchema(SerializableSchema):
     ) -> dict[str, Any]:
         """Convert GroupAddress schema into a dictionary representation."""
         return {
-            "type": "group_address",
+            CONF_TYPE: "group_address",
             "allow_internal_address": value.allow_internal_address,
         }
 
@@ -257,8 +265,8 @@ class GroupAddressListSchema(SerializableSchema):
     ) -> dict[str, Any]:
         """Convert GroupAddressCollection schema into a dictionary representation."""
         return {
-            "type": "group_address_list",
-            "items": convert(
+            CONF_TYPE: "group_address_list",
+            CONF_ITEMS: convert(
                 GroupAddressSchema(
                     allow_internal_address=value.allow_internal_addresses
                 )
@@ -291,7 +299,7 @@ class SyncStateSchema(SerializableSchema):
         cls, value: SyncStateSchema, convert: Callable[[Any], Any]
     ) -> dict[str, Any]:
         """Convert SyncState schema into a dictionary representation."""
-        return {"type": "sync_state"}
+        return {CONF_TYPE: "sync_state"}
 
 
 @dataclass
@@ -394,8 +402,8 @@ class GroupAddressConfigSchema:
     ) -> dict[str, Any]:
         """Convert GroupAddressConfig schema into a dictionary representation."""
         return {
-            "type": "group_address_config",
-            "properties": convert(value.schema),
+            CONF_TYPE: "group_address_config",
+            CONF_PROPERTIES: convert(value.schema),
         }
 
 
@@ -442,9 +450,9 @@ class PlatformConfigSchema(SerializableSchema):
         """Initialize."""
         self.schema = vol.Schema(
             {
-                vol.Required("platform"): platform,
+                vol.Required(CONF_PLATFORM): platform,
                 vol.Required(
-                    "config",
+                    CONF_CONFIG,
                 ): ConfigGroupSchema(config_schema),
             }
         )
@@ -464,8 +472,8 @@ class PlatformConfigSchema(SerializableSchema):
         """Convert Section schema into a dictionary representation."""
 
         return {
-            "type": "platform_config",
-            "properties": convert(value.schema),
+            CONF_TYPE: "platform_config",
+            CONF_PROPERTIES: convert(value.schema),
         }
 
 
@@ -551,11 +559,11 @@ class SchemaSerializer:
 
                 # Convert the child value using the `convert` method
                 serialized_value = cls.convert(child_value)
-                serialized_value["name"] = param_name
+                serialized_value[CONF_NAME] = param_name
 
                 # If there's a description, add it to the serialized output
                 if description is not None:
-                    serialized_value["description"] = description
+                    serialized_value[CONF_DESCRIPTION] = description
 
                 # Check if the key is Required or Optional
                 if isinstance(key, (vol.Required, vol.Optional)):

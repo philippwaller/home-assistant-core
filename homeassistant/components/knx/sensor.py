@@ -27,6 +27,7 @@ from homeassistant.const import (
     CONF_DEVICE_CLASS,
     CONF_ENTITY_CATEGORY,
     CONF_NAME,
+    CONF_PLATFORM,
     CONF_TYPE,
     EntityCategory,
     Platform,
@@ -39,7 +40,14 @@ from homeassistant.helpers.entity_platform import (
 from homeassistant.helpers.typing import ConfigType, StateType
 from homeassistant.util.enum import try_parse_enum
 
-from .const import ATTR_SOURCE, CONF_SYNC_STATE, KNX_MODULE_KEY
+from .const import (
+    ATTR_SOURCE,
+    CONF_CONFIG,
+    CONF_ENTITY_CONFIG,
+    CONF_PLATFORM_CONFIG,
+    CONF_SYNC_STATE,
+    KNX_MODULE_KEY,
+)
 from .entity import (
     EntityConfiguration,
     KnxUiEntity,
@@ -299,6 +307,8 @@ class UiSensorConfig(SensorConfig, Persistable):
     `StorageSerializationMixin`).
     """
 
+    CONF_SYNC_SETTINGS = "sync_settings"
+
     @classmethod
     def get_schema(cls) -> PlatformConfigSchema:
         """Retrieve the Voluptuous-based UI schema for this sensor configuration.
@@ -313,7 +323,7 @@ class UiSensorConfig(SensorConfig, Persistable):
             vol.Schema(
                 {
                     vol.Required(
-                        "platform_config",
+                        CONF_PLATFORM_CONFIG,
                     ): ConfigGroupSchema(
                         vol.Schema(
                             {
@@ -335,7 +345,7 @@ class UiSensorConfig(SensorConfig, Persistable):
                                     default=None,
                                 ): vol.Maybe(vol.Coerce(SensorDeviceClass)),
                                 vol.Optional(
-                                    "advanced",
+                                    cls.CONF_SYNC_SETTINGS,
                                 ): ConfigGroupSchema(
                                     vol.Schema(
                                         {
@@ -355,7 +365,7 @@ class UiSensorConfig(SensorConfig, Persistable):
                         )
                     ),
                     vol.Required(
-                        "entity_config",
+                        CONF_ENTITY_CONFIG,
                     ): EntityConfigGroupSchema(
                         allowed_categories=(EntityCategory.DIAGNOSTIC,)
                     ),
@@ -381,24 +391,24 @@ class UiSensorConfig(SensorConfig, Persistable):
         """
 
         validated = cls.get_schema()(data)
-        config = validated["config"]
+        config = validated[CONF_CONFIG]
 
-        category = config["entity_config"].get(CONF_ENTITY_CATEGORY)
-        state_class = config["platform_config"].get(CONF_STATE_CLASS)
-        device_class = config["platform_config"].get(CONF_DEVICE_CLASS)
-        advanced = config["platform_config"].get("advanced", {})
+        category = config[CONF_ENTITY_CONFIG].get(CONF_ENTITY_CATEGORY)
+        state_class = config[CONF_PLATFORM_CONFIG].get(CONF_STATE_CLASS)
+        device_class = config[CONF_PLATFORM_CONFIG].get(CONF_DEVICE_CLASS)
+        advanced = config[CONF_PLATFORM_CONFIG].get(cls.CONF_SYNC_SETTINGS, {})
 
         # Construct the instance using validated data
         return cls(
             sensor_ga=GroupAddressConfig.from_dict(
-                config["platform_config"][CONF_GA_SENSOR]
+                config[CONF_PLATFORM_CONFIG][CONF_GA_SENSOR]
             ),
             state_class=SensorStateClass(state_class) if state_class else None,
             device_class=SensorDeviceClass(device_class) if device_class else None,
             always_callback=advanced.get(CONF_ALWAYS_CALLBACK),
             sync_state=advanced.get(CONF_SYNC_STATE),
-            name=config["entity_config"][CONF_NAME],
-            device_info=config["entity_config"].get(CONF_DEVICE_INFO),
+            name=config[CONF_ENTITY_CONFIG][CONF_NAME],
+            device_info=config[CONF_ENTITY_CONFIG].get(CONF_DEVICE_INFO),
             entity_category=EntityCategory(category) if category else None,
         )
 
@@ -445,39 +455,43 @@ class UiSensorConfig(SensorConfig, Persistable):
         """
 
         result: dict[str, Any] = {
-            "platform": "sensor",
-            "config": {
-                "platform_config": {
+            CONF_PLATFORM: str(Platform.SENSOR),
+            CONF_CONFIG: {
+                CONF_PLATFORM_CONFIG: {
                     CONF_GA_SENSOR: self.sensor_ga.to_dict(),
-                    "advanced": {},
+                    self.CONF_SYNC_SETTINGS: {},
                 },
-                "entity_config": {},
+                CONF_ENTITY_CONFIG: {},
             },
         }
 
         # Platform-specific fields
         if self.state_class is not None:
-            result["config"]["platform_config"][CONF_STATE_CLASS] = self.state_class
+            result[CONF_CONFIG][CONF_PLATFORM_CONFIG][CONF_STATE_CLASS] = (
+                self.state_class
+            )
         if self.device_class is not None:
-            result["config"]["platform_config"][CONF_DEVICE_CLASS] = self.device_class
+            result[CONF_CONFIG][CONF_PLATFORM_CONFIG][CONF_DEVICE_CLASS] = (
+                self.device_class
+            )
 
         # Advanced subfields
         if self.always_callback is not None:
-            result["config"]["platform_config"]["advanced"][CONF_ALWAYS_CALLBACK] = (
-                self.always_callback
-            )
+            result[CONF_CONFIG][CONF_PLATFORM_CONFIG][self.CONF_SYNC_SETTINGS][
+                CONF_ALWAYS_CALLBACK
+            ] = self.always_callback
         if self.sync_state is not None:
-            result["config"]["platform_config"]["advanced"][CONF_SYNC_STATE] = (
-                self.sync_state
-            )
+            result[CONF_CONFIG][CONF_PLATFORM_CONFIG][self.CONF_SYNC_SETTINGS][
+                CONF_SYNC_STATE
+            ] = self.sync_state
 
         # Entity config
         if self.name is not None:
-            result["config"]["entity_config"][CONF_NAME] = self.name
+            result[CONF_CONFIG][CONF_ENTITY_CONFIG][CONF_NAME] = self.name
         if self.device_info is not None:
-            result["config"]["entity_config"][CONF_DEVICE_INFO] = self.device_info
+            result[CONF_CONFIG][CONF_ENTITY_CONFIG][CONF_DEVICE_INFO] = self.device_info
         if self.entity_category is not None:
-            result["config"]["entity_config"][CONF_ENTITY_CATEGORY] = (
+            result[CONF_CONFIG][CONF_ENTITY_CONFIG][CONF_ENTITY_CATEGORY] = (
                 self.entity_category
             )
 

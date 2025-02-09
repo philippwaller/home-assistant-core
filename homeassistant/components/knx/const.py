@@ -182,3 +182,10 @@ CURRENT_HVAC_ACTIONS: Final = {
     HVACMode.FAN_ONLY: HVACAction.FAN,
     HVACMode.DRY: HVACAction.DRYING,
 }
+
+# Data fields
+CONF_ENTITY_CONFIG = "entity_config"
+CONF_PLATFORM_CONFIG = "platform_config"
+CONF_PROPERTIES = "properties"
+CONF_ITEMS = "items"
+CONF_CONFIG = "config"
