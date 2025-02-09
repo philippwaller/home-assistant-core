@@ -15,7 +15,6 @@ CONF_DPT_UNIT: Final = "unit"
 
 CONF_GA_SENSOR: Final = "ga_sensor"
 CONF_GA_SWITCH: Final = "ga_switch"
-CONF_GA_SENSOR: Final = "ga_sensor"
 CONF_ALWAYS_CALLBACK: Final = "always_callback"
 CONF_GA_COLOR_TEMP: Final = "ga_color_temp"
 CONF_COLOR_TEMP_MIN: Final = "color_temp_min"
